@@ -1,0 +1,21 @@
+{
+  "name": "revenant-cloud",
+  "private": true,
+  "version": "0.0.1",
+  "description": "Revenant Cloud API — control plane backend",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run build -w @revenant/shared && npm run dev -w @revenant/api",
+    "build": "npm run build -w @revenant/shared && npm run build -w @revenant/api",
+    "db:create": "bash scripts/create-db.sh",
+    "db:migrate": "npm run db:migrate -w @revenant/api",
+    "db:generate": "npm run db:generate -w @revenant/api",
+    "typecheck": "npm run typecheck -w @revenant/shared && npm run typecheck -w @revenant/api"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
