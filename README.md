@@ -31,7 +31,18 @@ npm run dev
 
 Web: http://localhost:5173
 
-## Environment
+## Environment file location
+
+Put `.env` at the **repo root** (`revenant-cloud/.env`):
+
+```bash
+cp .env.example .env
+```
+
+Optional override: `apps/api/.env` (loaded after root).
+
+The API loads env in `apps/api/src/config/env.ts` — not from a separate `env.js` file.
+Variables are read from `.env` → `process.env` → validated by Zod.
 
 | Variable | Dev value | Notes |
 |----------|-----------|-------|
