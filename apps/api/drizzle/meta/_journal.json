@@ -8,6 +8,27 @@
       "when": 1735689600000,
       "tag": "0000_initial",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1788980052717,
+      "tag": "0001_illegal_runaways",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1788982006667,
+      "tag": "0002_free_daredevil",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1788982502197,
+      "tag": "0003_conscious_gunslinger",
+      "breakpoints": true
     }
   ]
 }

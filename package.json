@@ -11,8 +11,12 @@
     "dev": "npm run build -w @revenant/shared && npm run dev -w @revenant/api",
     "build": "npm run build -w @revenant/shared && npm run build -w @revenant/api",
     "db:create": "bash scripts/create-db.sh",
-    "db:migrate": "npm run db:migrate -w @revenant/api",
     "db:generate": "npm run db:generate -w @revenant/api",
+    "db:migrate": "npm run db:migrate -w @revenant/api",
+    "db:drop": "npm run db:drop -w @revenant/api",
+    "db:reset": "npm run db:reset -w @revenant/api",
+    "db:studio": "npm run db:studio -w @revenant/api",
+    "runner:stub": "npm run runner:stub -w @revenant/api",
     "typecheck": "npm run typecheck -w @revenant/shared && npm run typecheck -w @revenant/api"
   },
   "engines": {

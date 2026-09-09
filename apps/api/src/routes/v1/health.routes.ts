@@ -3,8 +3,7 @@ import type { HealthResponse } from "@revenant/shared";
 
 const VERSION = "0.0.1";
 
-/** Unversioned liveness probe (load balancers / k8s). */
-export async function rootHealthRoutes(app: FastifyInstance) {
+export async function healthRoutes(app: FastifyInstance) {
   app.get("/health", async (): Promise<HealthResponse> => ({
     status: "ok",
     service: "revenant-api",

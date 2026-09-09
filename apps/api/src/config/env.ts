@@ -13,6 +13,17 @@ const envSchema = z.object({
     .default("development"),
   JWT_SECRET: z.string().min(32, "JWT_SECRET must be at least 32 characters"),
   JWT_EXPIRES_IN: z.string().default("7d"),
+  /** AES-256 key as base64 (32 bytes). Generate: openssl rand -base64 32 */
+  MASTER_KEY: z
+    .string()
+    .min(1, "MASTER_KEY is required")
+    .refine((v) => {
+      try {
+        return Buffer.from(v, "base64").length === 32;
+      } catch {
+        return false;
+      }
+    }, "MASTER_KEY must be base64 of exactly 32 bytes (openssl rand -base64 32)"),
   CORS_ORIGIN: z.string().default("http://localhost:5173"),
   COOKIE_SECURE: z
     .enum(["true", "false"])
@@ -22,6 +33,8 @@ const envSchema = z.object({
     .enum(["true", "false"])
     .default("true")
     .transform((v) => v === "true"),
+  /** Shared secret for runner claim/complete endpoints */
+  RUNNER_TOKEN: z.string().min(16, "RUNNER_TOKEN must be at least 16 characters"),
 });
 
 export type Env = z.infer<typeof envSchema>;

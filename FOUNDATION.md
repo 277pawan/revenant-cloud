@@ -61,31 +61,72 @@ No exceptions. Cross-tenant leaks are company-ending bugs.
 
 ## Build order (do not skip)
 
-### Phase 0 — ✅ you are here
+### Phase 0 — ✅ done
 
 - [x] Monorepo, health, auth, login UI, app shell
 
-### Phase 1 — next
+### Phase 1 — ✅ complete (control-plane config)
 
-- [ ] `databases` table + CRUD API + list UI
-- [ ] `validation_plans` (store yaml text per database)
-- [ ] RBAC middleware (`admin` / `executor` / `viewer`)
+- [x] Layered API: `validations/` → `services/` → `controllers/` → `routes/v1/`
+- [x] `/api/v1` version prefix
+- [x] `databases` + `database_credentials` (AES-256-GCM) + CRUD
+- [x] Paginated list GETs (`page` / `pageSize` → `{ data, pagination }`)
+- [x] RBAC: `ROLE_PERMISSIONS` + `requirePermission`
+- [x] Databases list UI + add wizard (react-hook-form + zod)
+- [x] `validation_plans` (yaml text per database) + UI
+- [x] Team invite / list / role update / remove (admin)
 
-### Phase 2
+### Phase 2 — in progress
 
-- [ ] `jobs` + `job_results` tables
-- [ ] Runner process: poll API → spawn `revenant verify` → POST results
-- [ ] Job detail page (Figma)
+- [x] `jobs` + `job_results` tables
+- [x] Trigger job API + paginated list + job detail
+- [x] Runner claim/complete API (`RUNNER_TOKEN`) + stub runner
+- [x] Jobs list + job detail UI
+- [ ] Replace stub with real `revenant verify` CLI spawn
+- [ ] Polish job detail to Figma (evidence download later)
 
 ### Phase 3
 
-- [ ] `credentials` table with **AES-256-GCM** encryption at rest
-- [ ] KMS or `MASTER_KEY` env (never commit)
+- [ ] KMS / key rotation for `MASTER_KEY` (encryption already shipped in Phase 1)
 - [ ] AWS snapshot + restore flow via runner
+- [ ] Store AWS keys in encrypted credential blob
 
 ### Phase 4
 
 - [ ] Schedules, evidence vault, webhooks, audit log
+
+---
+
+## RBAC — how one website serves a whole team
+
+Same login page, same dashboard. After JWT auth, every request carries `role` + `organizationId`.
+
+| Role | Can do |
+|------|--------|
+| **admin** | Full: databases write, credentials, invite team, run jobs |
+| **executor** | Read databases, run jobs (ops engineer) |
+| **viewer** | Read-only (manager / auditor) |
+
+**Multi-tenancy:** every query filters by `organizationId` from the JWT.  
+**Authorization:** `requirePermission("databases:write")` etc. — see `packages/shared` `ROLE_PERMISSIONS`.
+
+Later: `POST /api/v1/team/invite` (admin only) creates a user in the **same org** with role `executor` or `viewer`. They log into the same website; sidebar/actions hide based on role.
+
+---
+
+## API layout (do not put full `/api/v1/...` in every handler)
+
+```
+apps/api/src/
+  validations/     # Zod schemas only
+  services/        # DB + business logic
+  controllers/     # HTTP request/response
+  routes/v1/       # Thin route wiring under prefix /api/v1
+  middleware/      # requireAuth, requirePermission
+  lib/             # crypto, password, session, errors
+```
+
+Routes register as `POST /auth/login` inside the `/api/v1` plugin → public URL `/api/v1/auth/login`.
 
 ---
 

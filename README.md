@@ -20,6 +20,19 @@ npm run dev
 
 API: http://localhost:8080/health
 
+## Database commands (from repo root)
+
+| Command | What it does |
+|---------|----------------|
+| `npm run db:create` | Create local `revenant_cloud` database |
+| `npm run db:generate` | Diff `schema.ts` → new SQL file in `apps/api/drizzle/` |
+| `npm run db:migrate` | Apply pending migrations |
+| `npm run db:drop` | **DEV** — drop all public tables + migration history |
+| `npm run db:reset` | **DEV** — `db:drop` then `db:migrate` (clean slate) |
+| `npm run db:studio` | Open Drizzle Studio |
+
+Drizzle does **not** auto-generate down/revert SQL. Locally use `db:reset`. In prod, write a new forward migration that undoes the change.
+
 ## Frontend (separate repo)
 
 ```bash
@@ -47,6 +60,8 @@ Variables are read from `.env` → `process.env` → validated by Zod.
 | Variable | Dev value | Notes |
 |----------|-----------|-------|
 | `DATABASE_URL` | `postgresql://postgres:root@localhost:5432/revenant_cloud` | Control-plane DB only |
+| `JWT_SECRET` | `openssl rand -base64 32` | Min 32 chars |
+| `MASTER_KEY` | `openssl rand -base64 32` | Exactly 32 bytes base64 — encrypts DB passwords |
 | `ALLOW_OPEN_REGISTRATION` | `true` | Set `false` before public deploy |
 | `COOKIE_SECURE` | `false` | `true` when on HTTPS |
 | `CORS_ORIGIN` | `http://localhost:5173` | Web app URL |

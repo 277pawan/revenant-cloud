@@ -10,7 +10,10 @@
     "typecheck": "tsc --noEmit",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/migrate.ts",
-    "db:studio": "drizzle-kit studio"
+    "db:drop": "tsx src/db/drop.ts",
+    "db:reset": "tsx src/db/drop.ts && tsx src/db/migrate.ts",
+    "db:studio": "drizzle-kit studio",
+    "runner:stub": "tsx src/runner/stub-runner.ts"
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.2",
