@@ -265,21 +265,28 @@ export interface CompleteJobRequest {
   }>;
 }
 
-export interface RunnerResource {
+export interface PlanServiceRunner {
   id: string;
-  name: string;
-  kind: RunnerKind | string;
   tokenPrefix: string;
   lastSeenAt: string | null;
-  createdAt: string;
-  revokedAt: string | null;
+  kind: RunnerKind | string;
 }
 
-export interface CreateRunnerRequest {
-  name: string;
-  kind: RunnerKind;
+export interface PlanServiceResource {
+  databaseId: string;
+  databaseName: string;
+  planName: string;
+  runner: PlanServiceRunner | null;
+  jobs: JobResource[];
 }
 
-export interface CreateRunnerResponse {
-  runner: RunnerResource & { token: string };
+export interface PlanServicesResponse {
+  services: PlanServiceResource[];
+}
+
+export interface IssueRunnerTokenResponse {
+  token: string;
+  runnerId: string;
+  /** True when a previous active token was revoked */
+  rotated: boolean;
 }

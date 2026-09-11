@@ -6,8 +6,14 @@ import { runners } from "../db/schema.js";
 import { hashRunnerToken } from "../lib/runner-token.js";
 
 export type RunnerAuthContext =
-  | { type: "stub"; organizationId: null }
-  | { type: "org"; organizationId: string; runnerId: string; kind: "agent" | "ci" };
+  | { type: "stub"; organizationId: null; databaseId: null }
+  | {
+      type: "org";
+      organizationId: string;
+      runnerId: string;
+      databaseId: string;
+      kind: "agent" | "ci";
+    };
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -30,7 +36,7 @@ export function requireRunner(env: Env, db: Database) {
     const token = auth.slice(7);
 
     if (token === env.RUNNER_TOKEN) {
-      request.runnerAuth = { type: "stub", organizationId: null };
+      request.runnerAuth = { type: "stub", organizationId: null, databaseId: null };
       return;
     }
 
@@ -45,11 +51,19 @@ export function requireRunner(env: Env, db: Database) {
       return reply.status(401).send({ error: "Unauthorized runner", code: "UNAUTHORIZED" });
     }
 
+    if (!rows[0].databaseId) {
+      return reply.status(401).send({
+        error: "Runner is not linked to a validation plan. Re-issue token from Settings.",
+        code: "RUNNER_NO_DATABASE",
+      });
+    }
+
     const kind = rows[0].kind === "ci" ? "ci" : "agent";
     request.runnerAuth = {
       type: "org",
       organizationId: rows[0].organizationId,
       runnerId: rows[0].id,
+      databaseId: rows[0].databaseId,
       kind,
     };
 

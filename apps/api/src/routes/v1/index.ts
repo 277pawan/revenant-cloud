@@ -35,7 +35,13 @@ export async function registerV1Routes(
       await databasesRoutes(api, deps.databasesHandlers);
       await plansRoutes(api, deps.plansHandlers);
       await teamRoutes(api, deps.teamHandlers);
-      await jobsRoutes(api, deps.jobsHandlers, deps.env, deps.db);
+      await jobsRoutes(
+        api,
+        deps.jobsHandlers,
+        deps.runnersHandlers,
+        deps.env,
+        deps.db
+      );
       await runnersRoutes(api, deps.runnersHandlers);
     },
     { prefix: "/api/v1" }

@@ -7,20 +7,14 @@ export async function runnersRoutes(
   handlers: RunnersHandlers
 ) {
   app.get(
-    "/runners",
-    { preHandler: requirePermission("team:manage") },
-    handlers.list
+    "/runners/services",
+    { preHandler: requirePermission("plans:read") },
+    handlers.listServices
   );
 
   app.post(
-    "/runners",
-    { preHandler: requirePermission("team:manage") },
-    handlers.create
-  );
-
-  app.delete(
-    "/runners/:id",
-    { preHandler: requirePermission("team:manage") },
-    handlers.revoke
+    "/runners/databases/:id/issue-token",
+    { preHandler: requirePermission("plans:write") },
+    handlers.issueToken
   );
 }

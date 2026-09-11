@@ -1,69 +1,69 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
-import {
-  createRunnerSchema,
-  runnerIdParamSchema,
-} from "../validations/runners.schema.js";
-import { paginationQuerySchema } from "../validations/pagination.schema.js";
+import { databaseIdParamSchema } from "../validations/databases.schema.js";
 import type { RunnersService } from "../services/runners.service.js";
 import { sendHandlerError } from "../lib/http.js";
 
 export function createRunnersHandlers(runnersService: RunnersService) {
   return {
-    list: async (request: FastifyRequest, reply: FastifyReply) => {
-      const query = paginationQuerySchema.safeParse(request.query);
-      if (!query.success) {
-        return reply
-          .status(400)
-          .send({ error: "Invalid pagination", code: "VALIDATION_ERROR" });
-      }
-
+    listServices: async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        return await runnersService.list(
-          request.user.organizationId,
-          query.data
+        const services = await runnersService.listServices(
+          request.user.organizationId
         );
+        return { services };
       } catch (err) {
-        return sendHandlerError(err, request, reply, "Failed to list runners");
+        return sendHandlerError(err, request, reply, "Failed to list services");
       }
     },
 
-    create: async (request: FastifyRequest, reply: FastifyReply) => {
-      const body = createRunnerSchema.safeParse(request.body);
-      if (!body.success) {
-        return reply.status(400).send({
-          error: "Invalid request",
-          code: "VALIDATION_ERROR",
-          details: body.error.flatten().fieldErrors,
-        });
-      }
-
-      try {
-        const runner = await runnersService.create(
-          request.user.organizationId,
-          body.data
-        );
-        return reply.status(201).send({ runner });
-      } catch (err) {
-        return sendHandlerError(err, request, reply, "Failed to create runner");
-      }
-    },
-
-    revoke: async (request: FastifyRequest, reply: FastifyReply) => {
-      const params = runnerIdParamSchema.safeParse(request.params);
+    issueToken: async (request: FastifyRequest, reply: FastifyReply) => {
+      const params = databaseIdParamSchema.safeParse(request.params);
       if (!params.success) {
         return reply
           .status(400)
-          .send({ error: "Invalid runner id", code: "VALIDATION_ERROR" });
+          .send({ error: "Invalid database id", code: "VALIDATION_ERROR" });
       }
 
       try {
-        await runnersService.revoke(
+        const { token, runnerId } = await runnersService.issueToken(
           request.user.organizationId,
           params.data.id
         );
-        return reply.status(204).send();
+        return reply.status(201).send({ token, runnerId });
       } catch (err) {
-        return sendHandlerError(err, request, reply, "Failed to revoke runner");
+        return sendHandlerError(err, request, reply, "Failed to issue token");
+      }
+    },
+
+    whoami: async (request: FastifyRequest, reply: FastifyReply) => {
+      if (!request.runnerAuth) {
+        return reply
+          .status(401)
+          .send({ error: "Unauthorized runner", code: "UNAUTHORIZED" });
+      }
+
+      if (request.runnerAuth.type === "stub") {
+        return {
+          identity: {
+            type: "stub",
+            runnerId: null,
+            organizationId: null,
+            databaseId: null,
+            name: "stub",
+            kind: "stub",
+            lastSeenAt: null,
+          },
+        };
+      }
+
+      try {
+        const identity = await runnersService.identity(
+          request.runnerAuth.runnerId,
+          request.runnerAuth.organizationId
+        );
+        return { identity };
+      } catch (err) {
+        return sendHandlerError(err, request, reply, "Failed to resolve runner");
       }
     },
   };

@@ -136,15 +136,17 @@ export const jobs = pgTable("jobs", {
 });
 
 /**
- * Per-org runners (self-hosted agent or CI).
- * Token shown once at create; only sha256 hash stored.
- * Global RUNNER_TOKEN remains for local stub only.
+ * One agent service per database / validation plan.
+ * Token shown once when issued; only sha256 hash stored.
  */
 export const runners = pgTable("runners", {
   id: uuid("id").primaryKey().defaultRandom(),
   organizationId: uuid("organization_id")
     .notNull()
     .references(() => organizations.id, { onDelete: "cascade" }),
+  databaseId: uuid("database_id").references(() => databases.id, {
+    onDelete: "cascade",
+  }),
   name: varchar("name", { length: 255 }).notNull(),
   /** agent | ci */
   kind: varchar("kind", { length: 50 }).notNull().default("agent"),

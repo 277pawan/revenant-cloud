@@ -137,6 +137,25 @@ export function createJobsService(db: Database, masterKey: string) {
       throw createAppError(404, "Database not found", "NOT_FOUND");
     }
 
+    const plan = await db
+      .select({ id: validationPlans.id })
+      .from(validationPlans)
+      .where(
+        and(
+          eq(validationPlans.databaseId, input.databaseId),
+          eq(validationPlans.organizationId, organizationId)
+        )
+      )
+      .limit(1);
+
+    if (!plan[0]) {
+      throw createAppError(
+        400,
+        "Save a validation plan for this database before running a job",
+        "NO_VALIDATION_PLAN"
+      );
+    }
+
     const [job] = await db
       .insert(jobs)
       .values({
@@ -152,13 +171,14 @@ export function createJobsService(db: Database, masterKey: string) {
   },
 
   /**
-   * Claim next pending job for the authenticated runner.
-   * Stub token → any org. Org token → that org only.
+   * Claim next pending job for this runner's validation plan (database).
+   * Org agent only sees jobs for its database — not org-wide first-come-first-served.
    */
   async claimNext(auth: RunnerAuthContext) {
     const conditions = [eq(jobs.status, "pending")];
     if (auth.type === "org") {
       conditions.push(eq(jobs.organizationId, auth.organizationId));
+      conditions.push(eq(jobs.databaseId, auth.databaseId));
     }
 
     const pending = await db
