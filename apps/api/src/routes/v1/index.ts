@@ -6,8 +6,12 @@ import type { TeamHandlers } from "../../controllers/team.controller.js";
 import type { JobsHandlers } from "../../controllers/jobs.controller.js";
 import type { RunnersHandlers } from "../../controllers/runners.controller.js";
 import type { SchedulesHandlers } from "../../controllers/schedules.controller.js";
+import type { EvidenceHandlers } from "../../controllers/evidence.controller.js";
+import type { WebhooksHandlers } from "../../controllers/webhooks.controller.js";
+import type { AuditHandlers } from "../../controllers/audit.controller.js";
 import type { Env } from "../../config/env.js";
 import type { Database } from "../../db/index.js";
+import type { JobsService } from "../../services/jobs.service.js";
 import { authRoutes } from "./auth.routes.js";
 import { databasesRoutes } from "./databases.routes.js";
 import { healthRoutes } from "./health.routes.js";
@@ -16,6 +20,9 @@ import { teamRoutes } from "./team.routes.js";
 import { jobsRoutes } from "./jobs.routes.js";
 import { runnersRoutes } from "./runners.routes.js";
 import { schedulesRoutes } from "./schedules.routes.js";
+import { evidenceRoutes } from "./evidence.routes.js";
+import { webhooksRoutes } from "./webhooks.routes.js";
+import { auditRoutes } from "./audit.routes.js";
 
 export async function registerV1Routes(
   app: FastifyInstance,
@@ -27,8 +34,12 @@ export async function registerV1Routes(
     jobsHandlers: JobsHandlers;
     runnersHandlers: RunnersHandlers;
     schedulesHandlers: SchedulesHandlers;
+    evidenceHandlers: EvidenceHandlers;
+    webhooksHandlers: WebhooksHandlers;
+    auditHandlers: AuditHandlers;
     env: Env;
     db: Database;
+    jobsService: JobsService;
   }
 ) {
   await app.register(
@@ -47,6 +58,9 @@ export async function registerV1Routes(
       );
       await runnersRoutes(api, deps.runnersHandlers);
       await schedulesRoutes(api, deps.schedulesHandlers);
+      await evidenceRoutes(api, deps.evidenceHandlers);
+      await webhooksRoutes(api, deps.webhooksHandlers);
+      await auditRoutes(api, deps.auditHandlers);
     },
     { prefix: "/api/v1" }
   );

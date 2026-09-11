@@ -117,6 +117,39 @@ export function createJobsService(db: Database, masterKey: string) {
     };
   },
 
+  async createFromSchedule(
+    organizationId: string,
+    databaseId: string
+  ): Promise<JobResource> {
+    const dbRows = await db
+      .select()
+      .from(databases)
+      .where(
+        and(
+          eq(databases.id, databaseId),
+          eq(databases.organizationId, organizationId)
+        )
+      )
+      .limit(1);
+
+    if (!dbRows[0]) {
+      throw createAppError(404, "Database not found", "NOT_FOUND");
+    }
+
+    const [job] = await db
+      .insert(jobs)
+      .values({
+        organizationId,
+        databaseId,
+        status: "pending",
+        trigger: "schedule",
+        triggeredByUserId: null,
+      })
+      .returning();
+
+    return toJob(job, dbRows[0].name);
+  },
+
   async create(
     organizationId: string,
     userId: string,
@@ -320,7 +353,21 @@ export function createJobsService(db: Database, masterKey: string) {
     }
 
     return toJob(updated, rows[0].databaseName);
-  }
+  },
+
+  async getOrganizationId(jobId: string): Promise<string> {
+    const rows = await db
+      .select({ organizationId: jobs.organizationId })
+      .from(jobs)
+      .where(eq(jobs.id, jobId))
+      .limit(1);
+
+    if (!rows[0]) {
+      throw createAppError(404, "Job not found", "NOT_FOUND");
+    }
+
+    return rows[0].organizationId;
+  },
   };
 }
 

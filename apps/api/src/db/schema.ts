@@ -185,6 +185,83 @@ export const schedules = pgTable(
   ]
 );
 
+/** Signed job reports — Phase 4 evidence vault */
+export const evidenceArtifacts = pgTable("evidence_artifacts", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  organizationId: uuid("organization_id")
+    .notNull()
+    .references(() => organizations.id, { onDelete: "cascade" }),
+  jobId: uuid("job_id")
+    .notNull()
+    .references(() => jobs.id, { onDelete: "cascade" }),
+  kind: varchar("kind", { length: 50 }).notNull().default("json"),
+  storageKey: text("storage_key").notNull(),
+  sha256: varchar("sha256", { length: 64 }).notNull(),
+  byteSize: integer("byte_size").notNull(),
+  signedAt: timestamp("signed_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** Outbound webhook endpoints per org */
+export const webhookEndpoints = pgTable("webhook_endpoints", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  organizationId: uuid("organization_id")
+    .notNull()
+    .references(() => organizations.id, { onDelete: "cascade" }),
+  name: varchar("name", { length: 255 }).notNull(),
+  /** slack | email | http */
+  provider: varchar("provider", { length: 50 }).notNull().default("http"),
+  /** Provider-specific JSON (webhook URLs, emails, routing keys) */
+  config: text("config").notNull().default("{}"),
+  /** Legacy / http provider — optional for app integrations */
+  url: text("url"),
+  secret: text("secret").notNull(),
+  /** AES-256-GCM encrypted SMTP app password (email provider) */
+  credentialCiphertext: text("credential_ciphertext"),
+  credentialIv: text("credential_iv"),
+  credentialAuthTag: text("credential_auth_tag"),
+  events: text("events").notNull().default("job.pass,job.fail"),
+  enabled: varchar("enabled", { length: 10 }).notNull().default("true"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** Webhook delivery attempts */
+export const webhookDeliveries = pgTable("webhook_deliveries", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  organizationId: uuid("organization_id")
+    .notNull()
+    .references(() => organizations.id, { onDelete: "cascade" }),
+  endpointId: uuid("endpoint_id")
+    .notNull()
+    .references(() => webhookEndpoints.id, { onDelete: "cascade" }),
+  jobId: uuid("job_id")
+    .notNull()
+    .references(() => jobs.id, { onDelete: "cascade" }),
+  event: varchar("event", { length: 50 }).notNull(),
+  status: varchar("status", { length: 50 }).notNull().default("pending"),
+  httpStatus: integer("http_status"),
+  errorMessage: text("error_message"),
+  attempts: integer("attempts").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** Append-only audit trail */
+export const auditEvents = pgTable("audit_events", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  organizationId: uuid("organization_id")
+    .notNull()
+    .references(() => organizations.id, { onDelete: "cascade" }),
+  actorUserId: uuid("actor_user_id").references(() => users.id, {
+    onDelete: "set null",
+  }),
+  action: varchar("action", { length: 100 }).notNull(),
+  resourceType: varchar("resource_type", { length: 100 }).notNull(),
+  resourceId: varchar("resource_id", { length: 255 }).notNull(),
+  metadata: text("metadata"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 /** Per-check results for a job */
 export const jobResults = pgTable("job_results", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -211,3 +288,7 @@ export type Job = typeof jobs.$inferSelect;
 export type JobResult = typeof jobResults.$inferSelect;
 export type Runner = typeof runners.$inferSelect;
 export type Schedule = typeof schedules.$inferSelect;
+export type EvidenceArtifact = typeof evidenceArtifacts.$inferSelect;
+export type WebhookEndpoint = typeof webhookEndpoints.$inferSelect;
+export type WebhookDelivery = typeof webhookDeliveries.$inferSelect;
+export type AuditEvent = typeof auditEvents.$inferSelect;

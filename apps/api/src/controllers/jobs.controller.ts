@@ -6,9 +6,17 @@ import {
 } from "../validations/jobs.schema.js";
 import { paginationQuerySchema } from "../validations/pagination.schema.js";
 import type { JobsService } from "../services/jobs.service.js";
+import type { EvidenceService } from "../services/evidence.service.js";
+import type { WebhooksService } from "../services/webhooks.service.js";
+import type { AuditService } from "../services/audit.service.js";
 import { sendHandlerError } from "../lib/http.js";
 
-export function createJobsHandlers(jobsService: JobsService) {
+export function createJobsHandlers(
+  jobsService: JobsService,
+  evidenceService: EvidenceService,
+  webhooksService: WebhooksService,
+  auditService: AuditService
+) {
   return {
     list: async (request: FastifyRequest, reply: FastifyReply) => {
       const query = paginationQuerySchema.safeParse(request.query);
@@ -60,6 +68,14 @@ export function createJobsHandlers(jobsService: JobsService) {
           request.user.id,
           body.data
         );
+        await auditService.log({
+          organizationId: request.user.organizationId,
+          actorUserId: request.user.id,
+          action: "job.create",
+          resourceType: "job",
+          resourceId: job.id,
+          metadata: { databaseId: job.databaseId, trigger: "manual" },
+        });
         return reply.status(201).send({ job });
       } catch (err) {
         return sendHandlerError(err, request, reply, "Failed to create job");
@@ -107,6 +123,16 @@ export function createJobsHandlers(jobsService: JobsService) {
           body.data,
           request.runnerAuth
         );
+
+        const orgId =
+          request.runnerAuth?.type === "org"
+            ? request.runnerAuth.organizationId
+            : await jobsService.getOrganizationId(job.id);
+
+        const detail = await jobsService.getById(orgId, job.id);
+        await evidenceService.archiveFromJob(orgId, detail);
+        await webhooksService.dispatchForJob(orgId, detail);
+
         return { job };
       } catch (err) {
         return sendHandlerError(err, request, reply, "Failed to complete job");

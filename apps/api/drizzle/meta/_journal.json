@@ -50,6 +50,27 @@
       "when": 1789062000000,
       "tag": "0006_schedules",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1789062800000,
+      "tag": "0007_phase4_evidence_webhooks_audit",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1789063600000,
+      "tag": "0008_webhook_providers",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1789064400000,
+      "tag": "0009_webhook_smtp_credentials",
+      "breakpoints": true
     }
   ]
 }

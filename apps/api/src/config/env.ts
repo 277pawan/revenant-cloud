@@ -49,6 +49,30 @@ const envSchema = z.object({
     }),
   /** Optional absolute path to revenant CLI binary */
   REVENANT_CLI_PATH: z.string().optional(),
+  /** Directory for signed evidence JSON artifacts */
+  EVIDENCE_DIR: z.string().default("./data/evidence"),
+  /**
+   * When true, API process polls due schedules and enqueues jobs.
+   * Default: on in development, off in production.
+   */
+  EMBEDDED_SCHEDULER: z
+    .enum(["true", "false", "auto"])
+    .default("auto")
+    .transform((v) => {
+      if (v === "true") return true;
+      if (v === "false") return false;
+      return (process.env.NODE_ENV ?? "development") !== "production";
+    }),
+  /** Optional — required for Email integration alerts */
+  SMTP_HOST: z.string().optional(),
+  SMTP_PORT: z.coerce.number().default(587),
+  SMTP_USER: z.string().optional(),
+  SMTP_PASS: z.string().optional(),
+  SMTP_FROM: z.string().email().optional(),
+  SMTP_SECURE: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
 });
 
 export type Env = z.infer<typeof envSchema>;

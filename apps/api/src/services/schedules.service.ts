@@ -2,6 +2,7 @@ import { and, desc, eq, sql } from "drizzle-orm";
 import type { ScheduleResource } from "@revenant/shared";
 import type { Database } from "../db/index.js";
 import { databases, schedules, validationPlans } from "../db/schema.js";
+import { computeNextRunAt } from "../lib/cron.js";
 import { createAppError } from "../lib/errors.js";
 import {
   paginationMeta,
@@ -104,6 +105,10 @@ export function createSchedulesService(db: Database) {
         );
       }
 
+      const nextRunAt = input.enabled
+        ? computeNextRunAt(input.cronExpression, input.timezone)
+        : null;
+
       const [row] = await db
         .insert(schedules)
         .values({
@@ -113,6 +118,7 @@ export function createSchedulesService(db: Database) {
           cronExpression: input.cronExpression,
           timezone: input.timezone,
           enabled: input.enabled ? "true" : "false",
+          nextRunAt,
         })
         .returning();
 
@@ -144,6 +150,30 @@ export function createSchedulesService(db: Database) {
       if (input.timezone !== undefined) patch.timezone = input.timezone;
       if (input.enabled !== undefined)
         patch.enabled = input.enabled ? "true" : "false";
+
+      const existing = await db
+        .select()
+        .from(schedules)
+        .where(
+          and(eq(schedules.id, id), eq(schedules.organizationId, organizationId))
+        )
+        .limit(1);
+
+      if (!existing[0]) {
+        throw createAppError(404, "Schedule not found", "NOT_FOUND");
+      }
+
+      const cronExpression =
+        input.cronExpression ?? existing[0].cronExpression;
+      const timezone = input.timezone ?? existing[0].timezone;
+      const enabled =
+        input.enabled !== undefined
+          ? input.enabled
+          : existing[0].enabled === "true";
+
+      patch.nextRunAt = enabled
+        ? computeNextRunAt(cronExpression, timezone)
+        : null;
 
       const [row] = await db
         .update(schedules)

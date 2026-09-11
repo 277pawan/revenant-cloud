@@ -1,19 +1,23 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { paginationQuerySchema } from "../validations/pagination.schema.js";
 import {
-  createScheduleSchema,
-  scheduleIdParamSchema,
-  updateScheduleSchema,
-} from "../validations/schedules.schema.js";
-import type { SchedulesService } from "../services/schedules.service.js";
+  createWebhookSchema,
+  updateWebhookSchema,
+  webhookIdParamSchema,
+} from "../validations/webhooks.schema.js";
+import type { WebhooksService } from "../services/webhooks.service.js";
 import type { AuditService } from "../services/audit.service.js";
 import { sendHandlerError } from "../lib/http.js";
 
-export function createSchedulesHandlers(
-  schedulesService: SchedulesService,
+export function createWebhooksHandlers(
+  webhooksService: WebhooksService,
   auditService: AuditService
 ) {
   return {
+    listProviders: async (_request: FastifyRequest, _reply: FastifyReply) => {
+      return webhooksService.listProviders();
+    },
+
     list: async (request: FastifyRequest, reply: FastifyReply) => {
       const query = paginationQuerySchema.safeParse(request.query);
       if (!query.success) {
@@ -23,59 +27,62 @@ export function createSchedulesHandlers(
       }
 
       try {
-        return await schedulesService.list(
+        return await webhooksService.list(
           request.user.organizationId,
           query.data
         );
       } catch (err) {
-        return sendHandlerError(err, request, reply, "Failed to list schedules");
+        return sendHandlerError(err, request, reply, "Failed to list webhooks");
       }
     },
 
     create: async (request: FastifyRequest, reply: FastifyReply) => {
-      const body = createScheduleSchema.safeParse(request.body);
+      const body = createWebhookSchema.safeParse(request.body);
       if (!body.success) {
         return reply
           .status(400)
-          .send({ error: "Invalid schedule", code: "VALIDATION_ERROR" });
+          .send({ error: "Invalid webhook", code: "VALIDATION_ERROR" });
       }
 
       try {
-        const schedule = await schedulesService.create(
+        const result = await webhooksService.create(
           request.user.organizationId,
           body.data
         );
         await auditService.log({
           organizationId: request.user.organizationId,
           actorUserId: request.user.id,
-          action: "schedule.create",
-          resourceType: "schedule",
-          resourceId: schedule.id,
-          metadata: { databaseId: schedule.databaseId, name: schedule.name },
+          action: "webhook.create",
+          resourceType: "webhook",
+          resourceId: result.endpoint.id,
+          metadata: {
+            name: result.endpoint.name,
+            provider: result.endpoint.provider,
+          },
         });
-        return reply.status(201).send({ schedule });
+        return reply.status(201).send(result);
       } catch (err) {
-        return sendHandlerError(err, request, reply, "Failed to create schedule");
+        return sendHandlerError(err, request, reply, "Failed to create webhook");
       }
     },
 
     update: async (request: FastifyRequest, reply: FastifyReply) => {
-      const params = scheduleIdParamSchema.safeParse(request.params);
+      const params = webhookIdParamSchema.safeParse(request.params);
       if (!params.success) {
         return reply
           .status(400)
-          .send({ error: "Invalid schedule id", code: "VALIDATION_ERROR" });
+          .send({ error: "Invalid webhook id", code: "VALIDATION_ERROR" });
       }
 
-      const body = updateScheduleSchema.safeParse(request.body);
+      const body = updateWebhookSchema.safeParse(request.body);
       if (!body.success) {
         return reply
           .status(400)
-          .send({ error: "Invalid schedule", code: "VALIDATION_ERROR" });
+          .send({ error: "Invalid webhook", code: "VALIDATION_ERROR" });
       }
 
       try {
-        const schedule = await schedulesService.update(
+        const endpoint = await webhooksService.update(
           request.user.organizationId,
           params.data.id,
           body.data
@@ -83,42 +90,42 @@ export function createSchedulesHandlers(
         await auditService.log({
           organizationId: request.user.organizationId,
           actorUserId: request.user.id,
-          action: "schedule.update",
-          resourceType: "schedule",
-          resourceId: schedule.id,
+          action: "webhook.update",
+          resourceType: "webhook",
+          resourceId: endpoint.id,
         });
-        return { schedule };
+        return { endpoint };
       } catch (err) {
-        return sendHandlerError(err, request, reply, "Failed to update schedule");
+        return sendHandlerError(err, request, reply, "Failed to update webhook");
       }
     },
 
     remove: async (request: FastifyRequest, reply: FastifyReply) => {
-      const params = scheduleIdParamSchema.safeParse(request.params);
+      const params = webhookIdParamSchema.safeParse(request.params);
       if (!params.success) {
         return reply
           .status(400)
-          .send({ error: "Invalid schedule id", code: "VALIDATION_ERROR" });
+          .send({ error: "Invalid webhook id", code: "VALIDATION_ERROR" });
       }
 
       try {
-        await schedulesService.remove(
+        await webhooksService.remove(
           request.user.organizationId,
           params.data.id
         );
         await auditService.log({
           organizationId: request.user.organizationId,
           actorUserId: request.user.id,
-          action: "schedule.delete",
-          resourceType: "schedule",
+          action: "webhook.delete",
+          resourceType: "webhook",
           resourceId: params.data.id,
         });
         return reply.status(204).send();
       } catch (err) {
-        return sendHandlerError(err, request, reply, "Failed to delete schedule");
+        return sendHandlerError(err, request, reply, "Failed to delete webhook");
       }
     },
   };
 }
 
-export type SchedulesHandlers = ReturnType<typeof createSchedulesHandlers>;
+export type WebhooksHandlers = ReturnType<typeof createWebhooksHandlers>;

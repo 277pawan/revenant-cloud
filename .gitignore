@@ -8,3 +8,4 @@ agent.yaml
 .DS_Store
 .turbo
 drizzle/meta/
+data/
