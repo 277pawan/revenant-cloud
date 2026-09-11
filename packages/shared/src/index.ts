@@ -16,6 +16,8 @@ export type Permission =
   | "plans:write"
   | "jobs:read"
   | "jobs:run"
+  | "schedules:read"
+  | "schedules:write"
   | "team:manage"
   | "team:read";
 
@@ -28,6 +30,8 @@ export const ROLE_PERMISSIONS: Record<UserRole, readonly Permission[]> = {
     "plans:write",
     "jobs:read",
     "jobs:run",
+    "schedules:read",
+    "schedules:write",
     "team:manage",
     "team:read",
   ],
@@ -37,9 +41,11 @@ export const ROLE_PERMISSIONS: Record<UserRole, readonly Permission[]> = {
     "plans:write",
     "jobs:read",
     "jobs:run",
+    "schedules:read",
+    "schedules:write",
     "team:read",
   ],
-  viewer: ["databases:read", "plans:read", "jobs:read", "team:read"],
+  viewer: ["databases:read", "plans:read", "jobs:read", "schedules:read", "team:read"],
 } as const;
 
 export function roleHasPermission(role: UserRole, permission: Permission): boolean {
@@ -287,6 +293,35 @@ export interface PlanServicesResponse {
 export interface IssueRunnerTokenResponse {
   token: string;
   runnerId: string;
-  /** True when a previous active token was revoked */
-  rotated: boolean;
+  /** True when a previous active token was rotated in place */
+  rotated?: boolean;
+}
+
+export interface ScheduleResource {
+  id: string;
+  databaseId: string;
+  databaseName: string;
+  name: string;
+  cronExpression: string;
+  timezone: string;
+  enabled: boolean;
+  lastRunAt: string | null;
+  nextRunAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateScheduleRequest {
+  databaseId: string;
+  name: string;
+  cronExpression: string;
+  timezone?: string;
+  enabled?: boolean;
+}
+
+export interface UpdateScheduleRequest {
+  name?: string;
+  cronExpression?: string;
+  timezone?: string;
+  enabled?: boolean;
 }

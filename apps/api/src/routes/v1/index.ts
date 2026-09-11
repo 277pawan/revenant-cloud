@@ -5,6 +5,7 @@ import type { PlansHandlers } from "../../controllers/plans.controller.js";
 import type { TeamHandlers } from "../../controllers/team.controller.js";
 import type { JobsHandlers } from "../../controllers/jobs.controller.js";
 import type { RunnersHandlers } from "../../controllers/runners.controller.js";
+import type { SchedulesHandlers } from "../../controllers/schedules.controller.js";
 import type { Env } from "../../config/env.js";
 import type { Database } from "../../db/index.js";
 import { authRoutes } from "./auth.routes.js";
@@ -14,6 +15,7 @@ import { plansRoutes } from "./plans.routes.js";
 import { teamRoutes } from "./team.routes.js";
 import { jobsRoutes } from "./jobs.routes.js";
 import { runnersRoutes } from "./runners.routes.js";
+import { schedulesRoutes } from "./schedules.routes.js";
 
 export async function registerV1Routes(
   app: FastifyInstance,
@@ -24,6 +26,7 @@ export async function registerV1Routes(
     teamHandlers: TeamHandlers;
     jobsHandlers: JobsHandlers;
     runnersHandlers: RunnersHandlers;
+    schedulesHandlers: SchedulesHandlers;
     env: Env;
     db: Database;
   }
@@ -43,6 +46,7 @@ export async function registerV1Routes(
         deps.db
       );
       await runnersRoutes(api, deps.runnersHandlers);
+      await schedulesRoutes(api, deps.schedulesHandlers);
     },
     { prefix: "/api/v1" }
   );

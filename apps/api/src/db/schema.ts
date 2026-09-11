@@ -157,6 +157,34 @@ export const runners = pgTable("runners", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+/**
+ * Cron schedules — Phase 4.
+ * One schedule per database / validation workflow (optional).
+ */
+export const schedules = pgTable(
+  "schedules",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    databaseId: uuid("database_id")
+      .notNull()
+      .references(() => databases.id, { onDelete: "cascade" }),
+    name: varchar("name", { length: 255 }).notNull(),
+    cronExpression: varchar("cron_expression", { length: 100 }).notNull(),
+    timezone: varchar("timezone", { length: 64 }).notNull().default("UTC"),
+    enabled: varchar("enabled", { length: 10 }).notNull().default("true"),
+    lastRunAt: timestamp("last_run_at", { withTimezone: true }),
+    nextRunAt: timestamp("next_run_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("schedules_database_id_idx").on(table.databaseId),
+  ]
+);
+
 /** Per-check results for a job */
 export const jobResults = pgTable("job_results", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -182,3 +210,4 @@ export type ValidationPlan = typeof validationPlans.$inferSelect;
 export type Job = typeof jobs.$inferSelect;
 export type JobResult = typeof jobResults.$inferSelect;
 export type Runner = typeof runners.$inferSelect;
+export type Schedule = typeof schedules.$inferSelect;

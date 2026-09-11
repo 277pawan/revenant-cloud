@@ -12,12 +12,14 @@ import { createPlansService } from "./services/plans.service.js";
 import { createTeamService } from "./services/team.service.js";
 import { createJobsService } from "./services/jobs.service.js";
 import { createRunnersService } from "./services/runners.service.js";
+import { createSchedulesService } from "./services/schedules.service.js";
 import { createAuthHandlers } from "./controllers/auth.controller.js";
 import { createDatabasesHandlers } from "./controllers/databases.controller.js";
 import { createPlansHandlers } from "./controllers/plans.controller.js";
 import { createTeamHandlers } from "./controllers/team.controller.js";
 import { createJobsHandlers } from "./controllers/jobs.controller.js";
 import { createRunnersHandlers } from "./controllers/runners.controller.js";
+import { createSchedulesHandlers } from "./controllers/schedules.controller.js";
 import { SESSION_COOKIE } from "./lib/session.js";
 import type { AuthUser } from "@revenant/shared";
 import type { Database } from "./db/index.js";
@@ -71,6 +73,7 @@ export async function buildApp(env: Env) {
     teamHandlers: createTeamHandlers(createTeamService(db)),
     jobsHandlers: createJobsHandlers(createJobsService(db, env.MASTER_KEY)),
     runnersHandlers: createRunnersHandlers(createRunnersService(db)),
+    schedulesHandlers: createSchedulesHandlers(createSchedulesService(db)),
     env,
     db,
   });

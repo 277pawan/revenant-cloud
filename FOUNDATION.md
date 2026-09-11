@@ -82,29 +82,41 @@ No exceptions. Cross-tenant leaks are company-ending bugs.
 - [x] Trigger job API + paginated list + job detail
 - [x] Runner claim/complete API
 - [x] **Embedded worker** on `npm run dev` (no separate runner terminal required)
-- [x] Org-scoped runners (agent | ci) for self-hosted / CI
-- [x] Wire execution to real `revenant verify` when CLI is available (`REVENANT_CLI_PATH` or sibling binary)
-- [x] Monaco YAML editor + format + checks preview (CLI-shaped default plan)
-- [x] Jobs list + job detail UI (Simulated badge when metadata fallback)
-- [ ] Polish job detail to Figma (evidence download later)
+- [x] Wire execution to real `revenant verify` when CLI is available
+- [x] Monaco YAML editor + format + checks preview
 
-### Phase 2.5 — Agent Box
+### Phase 2.5 — ✅ Agent Box + workflows UI
 
-- [x] Embedded worker claim/execute/complete (in `apps/api/src/runner`)
-- [x] **Agent Box moved out** → sibling repo `revenant-agent`
-- [x] Settings → Agent Box UI: install steps, `agent.yaml`, last-seen / online
-- [ ] Packaged binary / public Docker image for customers
-- [ ] systemd unit template in Settings download
+- [x] **Agent Box** → sibling repo `revenant-agent` (whoami, poll, execute)
+- [x] Plan-scoped runners (`runners.database_id`) + services API
+- [x] Token issue/rotate in-place (one active row per plan)
+- [x] Workflows UI: list → detail → run (React Flow graph) — see `revenant-cloud-web`
+- [x] Services page: agent tokens only (not duplicate of workflows)
+- [ ] Docker Hub publish + customer pull test — **see Phase 5**
 
-### Phase 3
+### Phase 3 — AWS restore (CLI + runner)
 
-- [ ] KMS / key rotation for `MASTER_KEY` (encryption already shipped in Phase 1)
+- [ ] KMS / key rotation for `MASTER_KEY`
 - [ ] AWS snapshot + restore flow via runner
 - [ ] Store AWS keys in encrypted credential blob
 
-### Phase 4
+### Phase 4 — in progress
 
-- [ ] Schedules, evidence vault, webhooks, audit log
+See [docs/PHASE4.md](./docs/PHASE4.md).
+
+- [x] Schedules table + CRUD API (scheduler worker next)
+- [ ] Evidence vault
+- [ ] Webhooks
+- [ ] Audit log
+
+### Phase 5 — deploy
+
+See [docs/PHASE5-DEPLOY.md](./docs/PHASE5-DEPLOY.md).
+
+- [ ] Build & push `revenant-agent` to Docker Hub
+- [ ] Test agent against staging API
+- [ ] Deploy API + web staging
+- [ ] Production hardening checklist
 
 ---
 
