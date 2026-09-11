@@ -138,6 +138,53 @@ export function createJobsHandlers(
         return sendHandlerError(err, request, reply, "Failed to complete job");
       }
     },
+
+    downloadEvidence: async (request: FastifyRequest, reply: FastifyReply) => {
+      const params = jobIdParamSchema.safeParse(request.params);
+      if (!params.success) {
+        return reply
+          .status(400)
+          .send({ error: "Invalid job id", code: "VALIDATION_ERROR" });
+      }
+
+      const orgId = request.user.organizationId;
+
+      try {
+        let artifact = await evidenceService.getByJobId(orgId, params.data.id);
+
+        if (!artifact) {
+          const job = await jobsService.getById(orgId, params.data.id);
+          if (!["pass", "fail", "error"].includes(job.status)) {
+            return reply.status(404).send({
+              error: "Report is available after the run finishes",
+              code: "NOT_READY",
+            });
+          }
+          await evidenceService.archiveFromJob(orgId, job);
+          artifact = await evidenceService.getByJobId(orgId, params.data.id);
+        }
+
+        if (!artifact) {
+          return reply
+            .status(404)
+            .send({ error: "Evidence not found", code: "NOT_FOUND" });
+        }
+
+        const { body, artifact: row } = await evidenceService.getDownload(
+          orgId,
+          artifact.id
+        );
+        return reply
+          .header("Content-Type", "application/json")
+          .header(
+            "Content-Disposition",
+            `attachment; filename="revenant-report-${row.jobId}.json"`
+          )
+          .send(body);
+      } catch (err) {
+        return sendHandlerError(err, request, reply, "Failed to download report");
+      }
+    },
   };
 }
 

@@ -1,4 +1,11 @@
 import { z } from "zod";
+import { paginationQuerySchema } from "./pagination.schema.js";
+
+export const databasesListQuerySchema = paginationQuerySchema.extend({
+  search: z.string().trim().max(255).optional(),
+});
+
+export type DatabasesListQueryInput = z.infer<typeof databasesListQuerySchema>;
 
 export const createDatabaseSchema = z.object({
   name: z.string().min(1).max(255),

@@ -4,14 +4,14 @@ import {
   databaseIdParamSchema,
   updateDatabaseSchema,
 } from "../validations/databases.schema.js";
-import { paginationQuerySchema } from "../validations/pagination.schema.js";
+import { databasesListQuerySchema } from "../validations/databases.schema.js";
 import type { DatabasesService } from "../services/databases.service.js";
 import { sendHandlerError } from "../lib/http.js";
 
 export function createDatabasesHandlers(databasesService: DatabasesService) {
   return {
     list: async (request: FastifyRequest, reply: FastifyReply) => {
-      const query = paginationQuerySchema.safeParse(request.query);
+      const query = databasesListQuerySchema.safeParse(request.query);
       if (!query.success) {
         return reply
           .status(400)

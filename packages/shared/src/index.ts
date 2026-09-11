@@ -138,6 +138,8 @@ export interface DatabaseResource {
   description: string | null;
   hasCredentials: boolean;
   hasValidationPlan: boolean;
+  validationPlanName: string | null;
+  validationPlanVersion: number | null;
   createdAt: string;
   updatedAt: string;
 }

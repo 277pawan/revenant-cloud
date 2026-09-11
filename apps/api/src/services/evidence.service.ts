@@ -98,6 +98,27 @@ export function createEvidenceService(db: Database, evidenceDir: string) {
       };
     },
 
+    async getByJobId(organizationId: string, jobId: string) {
+      const rows = await db
+        .select({
+          artifact: evidenceArtifacts,
+          databaseName: databases.name,
+        })
+        .from(evidenceArtifacts)
+        .innerJoin(jobs, eq(jobs.id, evidenceArtifacts.jobId))
+        .innerJoin(databases, eq(databases.id, jobs.databaseId))
+        .where(
+          and(
+            eq(evidenceArtifacts.jobId, jobId),
+            eq(evidenceArtifacts.organizationId, organizationId)
+          )
+        )
+        .limit(1);
+
+      if (!rows[0]) return null;
+      return toResource(rows[0].artifact, rows[0].databaseName);
+    },
+
     async getDownload(organizationId: string, id: string) {
       const rows = await db
         .select()
