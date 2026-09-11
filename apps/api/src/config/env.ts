@@ -33,8 +33,22 @@ const envSchema = z.object({
     .enum(["true", "false"])
     .default("true")
     .transform((v) => v === "true"),
-  /** Shared secret for runner claim/complete endpoints */
+  /** Shared secret for runner claim/complete endpoints (also used by embedded worker) */
   RUNNER_TOKEN: z.string().min(16, "RUNNER_TOKEN must be at least 16 characters"),
+  /**
+   * When true, API process polls/claims jobs itself (no separate runner:stub terminal).
+   * Default: on in development, off in production.
+   */
+  EMBEDDED_RUNNER: z
+    .enum(["true", "false", "auto"])
+    .default("auto")
+    .transform((v) => {
+      if (v === "true") return true;
+      if (v === "false") return false;
+      return (process.env.NODE_ENV ?? "development") !== "production";
+    }),
+  /** Optional absolute path to revenant CLI binary */
+  REVENANT_CLI_PATH: z.string().optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;

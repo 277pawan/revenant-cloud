@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import type { DatabasesController } from "../../controllers/databases.controller.js";
+import type { DatabasesHandlers } from "../../controllers/databases.controller.js";
 import { requirePermission } from "../../middleware/auth.js";
 
 /**
@@ -9,35 +9,35 @@ import { requirePermission } from "../../middleware/auth.js";
  */
 export async function databasesRoutes(
   app: FastifyInstance,
-  controller: DatabasesController
+  handlers: DatabasesHandlers
 ) {
   app.get(
     "/databases",
     { preHandler: requirePermission("databases:read") },
-    controller.list
+    handlers.list
   );
 
   app.get(
     "/databases/:id",
     { preHandler: requirePermission("databases:read") },
-    controller.get
+    handlers.get
   );
 
   app.post(
     "/databases",
     { preHandler: requirePermission("databases:write") },
-    controller.create
+    handlers.create
   );
 
   app.patch(
     "/databases/:id",
     { preHandler: requirePermission("databases:write") },
-    controller.update
+    handlers.update
   );
 
   app.delete(
     "/databases/:id",
     { preHandler: requirePermission("databases:write") },
-    controller.remove
+    handlers.remove
   );
 }

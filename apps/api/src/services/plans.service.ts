@@ -2,7 +2,7 @@ import { and, count, desc, eq } from "drizzle-orm";
 import type { Paginated, ValidationPlanResource } from "@revenant/shared";
 import type { Database } from "../db/index.js";
 import { databases, validationPlans } from "../db/schema.js";
-import { AppError } from "../lib/errors.js";
+import { createAppError } from "../lib/errors.js";
 import type { UpsertValidationPlanInput } from "../validations/plans.schema.js";
 import {
   paginationMeta,
@@ -26,14 +26,13 @@ function toResource(
   };
 }
 
-export class PlansService {
-  constructor(private db: Database) {}
+export function createPlansService(db: Database) {
 
-  private async assertDatabase(
+  async function assertDatabase(
     organizationId: string,
     databaseId: string
   ): Promise<{ id: string; name: string }> {
-    const rows = await this.db
+    const rows = await db
       .select({ id: databases.id, name: databases.name })
       .from(databases)
       .where(
@@ -42,11 +41,11 @@ export class PlansService {
       .limit(1);
 
     if (!rows[0]) {
-      throw new AppError(404, "Database not found", "NOT_FOUND");
+      throw createAppError(404, "Database not found", "NOT_FOUND");
     }
     return rows[0];
   }
-
+  return {
   async list(
     organizationId: string,
     pagination: PaginationQueryInput
@@ -54,14 +53,14 @@ export class PlansService {
     const { page, pageSize } = pagination;
     const offset = paginationOffset(page, pageSize);
 
-    const [totalRow] = await this.db
+    const [totalRow] = await db
       .select({ value: count() })
       .from(validationPlans)
       .where(eq(validationPlans.organizationId, organizationId));
 
     const total = Number(totalRow?.value ?? 0);
 
-    const rows = await this.db
+    const rows = await db
       .select({
         plan: validationPlans,
         databaseName: databases.name,
@@ -77,15 +76,15 @@ export class PlansService {
       data: rows.map((r) => toResource(r.plan, r.databaseName)),
       pagination: paginationMeta(total, page, pageSize),
     };
-  }
+  },
 
   async getByDatabaseId(
     organizationId: string,
     databaseId: string
   ): Promise<ValidationPlanResource> {
-    const dbRow = await this.assertDatabase(organizationId, databaseId);
+    const dbRow = await assertDatabase(organizationId, databaseId);
 
-    const rows = await this.db
+    const rows = await db
       .select()
       .from(validationPlans)
       .where(
@@ -97,19 +96,19 @@ export class PlansService {
       .limit(1);
 
     if (!rows[0]) {
-      throw new AppError(404, "Validation plan not found", "NOT_FOUND");
+      throw createAppError(404, "Validation plan not found", "NOT_FOUND");
     }
     return toResource(rows[0], dbRow.name);
-  }
+  },
 
   async upsert(
     organizationId: string,
     databaseId: string,
     input: UpsertValidationPlanInput
   ): Promise<ValidationPlanResource> {
-    const dbRow = await this.assertDatabase(organizationId, databaseId);
+    const dbRow = await assertDatabase(organizationId, databaseId);
 
-    const existing = await this.db
+    const existing = await db
       .select()
       .from(validationPlans)
       .where(
@@ -121,7 +120,7 @@ export class PlansService {
       .limit(1);
 
     if (existing[0]) {
-      const [updated] = await this.db
+      const [updated] = await db
         .update(validationPlans)
         .set({
           name: input.name ?? existing[0].name,
@@ -134,7 +133,7 @@ export class PlansService {
       return toResource(updated, dbRow.name);
     }
 
-    const [created] = await this.db
+    const [created] = await db
       .insert(validationPlans)
       .values({
         organizationId,
@@ -146,12 +145,12 @@ export class PlansService {
       .returning();
 
     return toResource(created, dbRow.name);
-  }
+  },
 
   async delete(organizationId: string, databaseId: string): Promise<void> {
-    await this.assertDatabase(organizationId, databaseId);
+    await assertDatabase(organizationId, databaseId);
 
-    const deleted = await this.db
+    const deleted = await db
       .delete(validationPlans)
       .where(
         and(
@@ -162,7 +161,10 @@ export class PlansService {
       .returning({ id: validationPlans.id });
 
     if (!deleted[0]) {
-      throw new AppError(404, "Validation plan not found", "NOT_FOUND");
+      throw createAppError(404, "Validation plan not found", "NOT_FOUND");
     }
   }
+  };
 }
+
+export type PlansService = ReturnType<typeof createPlansService>;

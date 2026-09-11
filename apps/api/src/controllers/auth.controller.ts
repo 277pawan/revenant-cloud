@@ -1,52 +1,50 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { loginSchema, registerSchema } from "../validations/auth.schema.js";
 import type { AuthService } from "../services/auth.service.js";
-import { isAppError } from "../lib/errors.js";
+import { sendHandlerError } from "../lib/http.js";
 
-export class AuthController {
-  constructor(private authService: AuthService) {}
-
-  register = async (request: FastifyRequest, reply: FastifyReply) => {
-    const parsed = registerSchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ error: "Invalid request", code: "VALIDATION_ERROR" });
-    }
-
-    try {
-      const { user } = await this.authService.register(parsed.data);
-      return this.authService.issueSession(reply, user);
-    } catch (err) {
-      if (isAppError(err)) {
-        return reply.status(err.statusCode).send({ error: err.message, code: err.code });
+export function createAuthHandlers(authService: AuthService) {
+  return {
+    register: async (request: FastifyRequest, reply: FastifyReply) => {
+      const parsed = registerSchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply
+          .status(400)
+          .send({ error: "Invalid request", code: "VALIDATION_ERROR" });
       }
-      request.log.error(err);
-      return reply.status(500).send({ error: "Registration failed", code: "INTERNAL" });
-    }
-  };
 
-  login = async (request: FastifyRequest, reply: FastifyReply) => {
-    const parsed = loginSchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ error: "Invalid request", code: "VALIDATION_ERROR" });
-    }
-
-    try {
-      const user = await this.authService.login(parsed.data);
-      return this.authService.issueSession(reply, user);
-    } catch (err) {
-      if (isAppError(err)) {
-        return reply.status(err.statusCode).send({ error: err.message, code: err.code });
+      try {
+        const { user } = await authService.register(parsed.data);
+        return authService.issueSession(reply, user);
+      } catch (err) {
+        return sendHandlerError(err, request, reply, "Registration failed");
       }
-      request.log.error(err);
-      return reply.status(500).send({ error: "Login failed", code: "INTERNAL" });
-    }
-  };
+    },
 
-  logout = async (_request: FastifyRequest, reply: FastifyReply) => {
-    return this.authService.logout(reply);
-  };
+    login: async (request: FastifyRequest, reply: FastifyReply) => {
+      const parsed = loginSchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply
+          .status(400)
+          .send({ error: "Invalid request", code: "VALIDATION_ERROR" });
+      }
 
-  me = async (request: FastifyRequest) => {
-    return { user: request.user };
+      try {
+        const user = await authService.login(parsed.data);
+        return authService.issueSession(reply, user);
+      } catch (err) {
+        return sendHandlerError(err, request, reply, "Login failed");
+      }
+    },
+
+    logout: async (_request: FastifyRequest, reply: FastifyReply) => {
+      return authService.logout(reply);
+    },
+
+    me: async (request: FastifyRequest) => {
+      return { user: request.user };
+    },
   };
 }
+
+export type AuthHandlers = ReturnType<typeof createAuthHandlers>;

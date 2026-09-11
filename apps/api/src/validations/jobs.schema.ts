@@ -12,6 +12,8 @@ export const completeJobSchema = z.object({
   status: z.enum(["pass", "fail", "error"]),
   errorMessage: z.string().max(4000).optional(),
   rtoSeconds: z.number().int().min(0).optional(),
+  /** Optional override — normally set on claim from runner kind */
+  executionMode: z.enum(["stub", "agent", "ci"]).optional(),
   results: z
     .array(
       z.object({

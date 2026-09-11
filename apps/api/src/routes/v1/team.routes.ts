@@ -1,29 +1,29 @@
 import type { FastifyInstance } from "fastify";
-import type { TeamController } from "../../controllers/team.controller.js";
+import type { TeamHandlers } from "../../controllers/team.controller.js";
 import { requirePermission } from "../../middleware/auth.js";
 
-export async function teamRoutes(app: FastifyInstance, controller: TeamController) {
+export async function teamRoutes(app: FastifyInstance, handlers: TeamHandlers) {
   app.get(
     "/team/members",
     { preHandler: requirePermission("team:read") },
-    controller.list
+    handlers.list
   );
 
   app.post(
     "/team/members",
     { preHandler: requirePermission("team:manage") },
-    controller.invite
+    handlers.invite
   );
 
   app.patch(
     "/team/members/:id",
     { preHandler: requirePermission("team:manage") },
-    controller.update
+    handlers.update
   );
 
   app.delete(
     "/team/members/:id",
     { preHandler: requirePermission("team:manage") },
-    controller.remove
+    handlers.remove
   );
 }

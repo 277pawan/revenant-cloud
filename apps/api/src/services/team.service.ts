@@ -3,7 +3,7 @@ import type { Paginated, TeamMemberResource, UserRole } from "@revenant/shared";
 import type { Database } from "../db/index.js";
 import { users } from "../db/schema.js";
 import { hashPassword } from "../lib/password.js";
-import { AppError } from "../lib/errors.js";
+import { createAppError } from "../lib/errors.js";
 import type {
   InviteTeamMemberInput,
   UpdateTeamMemberInput,
@@ -24,9 +24,29 @@ function toMember(row: typeof users.$inferSelect): TeamMemberResource {
   };
 }
 
-export class TeamService {
-  constructor(private db: Database) {}
+export function createTeamService(db: Database) {
 
+  async function assertNotLastAdmin(organizationId: string, excludeId: string) {
+    const [row] = await db
+      .select({ value: count() })
+      .from(users)
+      .where(
+        and(
+          eq(users.organizationId, organizationId),
+          eq(users.role, "admin"),
+          ne(users.id, excludeId)
+        )
+      );
+
+    if (Number(row?.value ?? 0) < 1) {
+      throw createAppError(
+        400,
+        "Organization must keep at least one admin",
+        "LAST_ADMIN"
+      );
+    }
+  }
+  return {
   async list(
     organizationId: string,
     pagination: PaginationQueryInput
@@ -34,14 +54,14 @@ export class TeamService {
     const { page, pageSize } = pagination;
     const offset = paginationOffset(page, pageSize);
 
-    const [totalRow] = await this.db
+    const [totalRow] = await db
       .select({ value: count() })
       .from(users)
       .where(eq(users.organizationId, organizationId));
 
     const total = Number(totalRow?.value ?? 0);
 
-    const rows = await this.db
+    const rows = await db
       .select()
       .from(users)
       .where(eq(users.organizationId, organizationId))
@@ -53,7 +73,7 @@ export class TeamService {
       data: rows.map(toMember),
       pagination: paginationMeta(total, page, pageSize),
     };
-  }
+  },
 
   async invite(
     organizationId: string,
@@ -62,7 +82,7 @@ export class TeamService {
     const passwordHash = await hashPassword(input.password);
 
     try {
-      const [user] = await this.db
+      const [user] = await db
         .insert(users)
         .values({
           organizationId,
@@ -76,11 +96,11 @@ export class TeamService {
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "";
       if (message.includes("unique") || message.includes("duplicate")) {
-        throw new AppError(409, "Email already exists in this organization", "CONFLICT");
+        throw createAppError(409, "Email already exists in this organization", "CONFLICT");
       }
       throw err;
     }
-  }
+  },
 
   async updateRole(
     organizationId: string,
@@ -89,31 +109,31 @@ export class TeamService {
     input: UpdateTeamMemberInput
   ): Promise<TeamMemberResource> {
     if (memberId === actorId && input.role !== "admin") {
-      throw new AppError(400, "You cannot demote your own admin role", "INVALID_ROLE_CHANGE");
+      throw createAppError(400, "You cannot demote your own admin role", "INVALID_ROLE_CHANGE");
     }
 
-    const target = await this.db
+    const target = await db
       .select()
       .from(users)
       .where(and(eq(users.id, memberId), eq(users.organizationId, organizationId)))
       .limit(1);
 
     if (!target[0]) {
-      throw new AppError(404, "Team member not found", "NOT_FOUND");
+      throw createAppError(404, "Team member not found", "NOT_FOUND");
     }
 
     if (target[0].role === "admin" && input.role !== "admin") {
-      await this.assertNotLastAdmin(organizationId, memberId);
+      await assertNotLastAdmin(organizationId, memberId);
     }
 
-    const [updated] = await this.db
+    const [updated] = await db
       .update(users)
       .set({ role: input.role, updatedAt: new Date() })
       .where(and(eq(users.id, memberId), eq(users.organizationId, organizationId)))
       .returning();
 
     return toMember(updated);
-  }
+  },
 
   async remove(
     organizationId: string,
@@ -121,46 +141,28 @@ export class TeamService {
     actorId: string
   ): Promise<void> {
     if (memberId === actorId) {
-      throw new AppError(400, "You cannot remove yourself", "CANNOT_REMOVE_SELF");
+      throw createAppError(400, "You cannot remove yourself", "CANNOT_REMOVE_SELF");
     }
 
-    const target = await this.db
+    const target = await db
       .select()
       .from(users)
       .where(and(eq(users.id, memberId), eq(users.organizationId, organizationId)))
       .limit(1);
 
     if (!target[0]) {
-      throw new AppError(404, "Team member not found", "NOT_FOUND");
+      throw createAppError(404, "Team member not found", "NOT_FOUND");
     }
 
     if (target[0].role === "admin") {
-      await this.assertNotLastAdmin(organizationId, memberId);
+      await assertNotLastAdmin(organizationId, memberId);
     }
 
-    await this.db
+    await db
       .delete(users)
       .where(and(eq(users.id, memberId), eq(users.organizationId, organizationId)));
   }
-
-  private async assertNotLastAdmin(organizationId: string, excludeId: string) {
-    const [row] = await this.db
-      .select({ value: count() })
-      .from(users)
-      .where(
-        and(
-          eq(users.organizationId, organizationId),
-          eq(users.role, "admin"),
-          ne(users.id, excludeId)
-        )
-      );
-
-    if (Number(row?.value ?? 0) < 1) {
-      throw new AppError(
-        400,
-        "Organization must keep at least one admin",
-        "LAST_ADMIN"
-      );
-    }
-  }
+  };
 }
+
+export type TeamService = ReturnType<typeof createTeamService>;

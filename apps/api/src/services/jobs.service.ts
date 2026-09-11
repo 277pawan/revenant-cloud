@@ -14,7 +14,8 @@ import {
   validationPlans,
 } from "../db/schema.js";
 import { decryptSecret } from "../lib/crypto.js";
-import { AppError } from "../lib/errors.js";
+import { createAppError } from "../lib/errors.js";
+import type { RunnerAuthContext } from "../middleware/runner.js";
 import type { CompleteJobInput, CreateJobInput } from "../validations/jobs.schema.js";
 import {
   paginationMeta,
@@ -32,6 +33,7 @@ function toJob(
     databaseName,
     status: row.status,
     trigger: row.trigger,
+    executionMode: row.executionMode,
     triggeredByUserId: row.triggeredByUserId,
     errorMessage: row.errorMessage,
     rtoSeconds: row.rtoSeconds,
@@ -54,12 +56,8 @@ function toResult(row: typeof jobResults.$inferSelect): JobResultResource {
   };
 }
 
-export class JobsService {
-  constructor(
-    private db: Database,
-    private masterKey: string
-  ) {}
-
+export function createJobsService(db: Database, masterKey: string) {
+  return {
   async list(
     organizationId: string,
     pagination: PaginationQueryInput
@@ -67,14 +65,14 @@ export class JobsService {
     const { page, pageSize } = pagination;
     const offset = paginationOffset(page, pageSize);
 
-    const [totalRow] = await this.db
+    const [totalRow] = await db
       .select({ value: count() })
       .from(jobs)
       .where(eq(jobs.organizationId, organizationId));
 
     const total = Number(totalRow?.value ?? 0);
 
-    const rows = await this.db
+    const rows = await db
       .select({
         job: jobs,
         databaseName: databases.name,
@@ -90,10 +88,10 @@ export class JobsService {
       data: rows.map((r) => toJob(r.job, r.databaseName)),
       pagination: paginationMeta(total, page, pageSize),
     };
-  }
+  },
 
   async getById(organizationId: string, id: string): Promise<JobDetailResource> {
-    const rows = await this.db
+    const rows = await db
       .select({
         job: jobs,
         databaseName: databases.name,
@@ -104,10 +102,10 @@ export class JobsService {
       .limit(1);
 
     if (!rows[0]) {
-      throw new AppError(404, "Job not found", "NOT_FOUND");
+      throw createAppError(404, "Job not found", "NOT_FOUND");
     }
 
-    const results = await this.db
+    const results = await db
       .select()
       .from(jobResults)
       .where(eq(jobResults.jobId, id))
@@ -117,14 +115,14 @@ export class JobsService {
       ...toJob(rows[0].job, rows[0].databaseName),
       results: results.map(toResult),
     };
-  }
+  },
 
   async create(
     organizationId: string,
     userId: string,
     input: CreateJobInput
   ): Promise<JobResource> {
-    const dbRows = await this.db
+    const dbRows = await db
       .select()
       .from(databases)
       .where(
@@ -136,10 +134,10 @@ export class JobsService {
       .limit(1);
 
     if (!dbRows[0]) {
-      throw new AppError(404, "Database not found", "NOT_FOUND");
+      throw createAppError(404, "Database not found", "NOT_FOUND");
     }
 
-    const [job] = await this.db
+    const [job] = await db
       .insert(jobs)
       .values({
         organizationId,
@@ -151,21 +149,26 @@ export class JobsService {
       .returning();
 
     return toJob(job, dbRows[0].name);
-  }
+  },
 
   /**
-   * Claim next pending job for the runner.
-   * Returns decrypted password + plan yaml for execution (never via public UI APIs).
+   * Claim next pending job for the authenticated runner.
+   * Stub token → any org. Org token → that org only.
    */
-  async claimNext() {
-    const pending = await this.db
+  async claimNext(auth: RunnerAuthContext) {
+    const conditions = [eq(jobs.status, "pending")];
+    if (auth.type === "org") {
+      conditions.push(eq(jobs.organizationId, auth.organizationId));
+    }
+
+    const pending = await db
       .select({
         job: jobs,
         database: databases,
       })
       .from(jobs)
       .innerJoin(databases, eq(databases.id, jobs.databaseId))
-      .where(eq(jobs.status, "pending"))
+      .where(and(...conditions))
       .orderBy(jobs.createdAt)
       .limit(1);
 
@@ -174,11 +177,15 @@ export class JobsService {
     }
 
     const { job, database } = pending[0];
+    const executionMode = auth.type === "stub" ? "stub" : auth.kind;
+    const claimedByRunnerId = auth.type === "org" ? auth.runnerId : null;
 
-    const [updated] = await this.db
+    const [updated] = await db
       .update(jobs)
       .set({
         status: "running",
+        executionMode,
+        claimedByRunnerId,
         startedAt: new Date(),
         updatedAt: new Date(),
       })
@@ -186,11 +193,10 @@ export class JobsService {
       .returning();
 
     if (!updated) {
-      // Lost race — another runner claimed it
       return null;
     }
 
-    const cred = await this.db
+    const cred = await db
       .select()
       .from(databaseCredentials)
       .where(eq(databaseCredentials.databaseId, database.id))
@@ -204,11 +210,11 @@ export class JobsService {
           iv: cred[0].iv,
           authTag: cred[0].authTag,
         },
-        this.masterKey
+        masterKey
       );
     }
 
-    const plan = await this.db
+    const plan = await db
       .select()
       .from(validationPlans)
       .where(eq(validationPlans.databaseId, database.id))
@@ -229,11 +235,16 @@ export class JobsService {
       password,
       planYaml: plan[0]?.yamlText ?? null,
       planVersion: plan[0]?.version ?? null,
+      executionMode,
     };
-  }
+  },
 
-  async complete(jobId: string, input: CompleteJobInput): Promise<JobResource> {
-    const rows = await this.db
+  async complete(
+    jobId: string,
+    input: CompleteJobInput,
+    auth?: RunnerAuthContext
+  ): Promise<JobResource> {
+    const rows = await db
       .select({
         job: jobs,
         databaseName: databases.name,
@@ -244,19 +255,29 @@ export class JobsService {
       .limit(1);
 
     if (!rows[0]) {
-      throw new AppError(404, "Job not found", "NOT_FOUND");
+      throw createAppError(404, "Job not found", "NOT_FOUND");
+    }
+
+    if (auth?.type === "org" && rows[0].job.organizationId !== auth.organizationId) {
+      throw createAppError(404, "Job not found", "NOT_FOUND");
     }
 
     if (rows[0].job.status !== "running" && rows[0].job.status !== "pending") {
-      throw new AppError(409, "Job is already finished", "JOB_ALREADY_FINISHED");
+      throw createAppError(409, "Job is already finished", "JOB_ALREADY_FINISHED");
     }
 
-    const [updated] = await this.db
+    const executionMode =
+      input.executionMode ??
+      rows[0].job.executionMode ??
+      (auth?.type === "stub" ? "stub" : auth?.type === "org" ? auth.kind : null);
+
+    const [updated] = await db
       .update(jobs)
       .set({
         status: input.status,
         errorMessage: input.errorMessage ?? null,
         rtoSeconds: input.rtoSeconds ?? null,
+        executionMode,
         finishedAt: new Date(),
         updatedAt: new Date(),
         startedAt: rows[0].job.startedAt ?? new Date(),
@@ -265,7 +286,7 @@ export class JobsService {
       .returning();
 
     if (input.results.length > 0) {
-      await this.db.insert(jobResults).values(
+      await db.insert(jobResults).values(
         input.results.map((r) => ({
           organizationId: updated.organizationId,
           jobId: updated.id,
@@ -280,4 +301,7 @@ export class JobsService {
 
     return toJob(updated, rows[0].databaseName);
   }
+  };
 }
+
+export type JobsService = ReturnType<typeof createJobsService>;

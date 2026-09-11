@@ -6,16 +6,18 @@ import type { Env } from "./config/env.js";
 import { createDb } from "./db/index.js";
 import { rootHealthRoutes } from "./routes/health.js";
 import { registerV1Routes } from "./routes/v1/index.js";
-import { AuthService } from "./services/auth.service.js";
-import { DatabasesService } from "./services/databases.service.js";
-import { PlansService } from "./services/plans.service.js";
-import { TeamService } from "./services/team.service.js";
-import { JobsService } from "./services/jobs.service.js";
-import { AuthController } from "./controllers/auth.controller.js";
-import { DatabasesController } from "./controllers/databases.controller.js";
-import { PlansController } from "./controllers/plans.controller.js";
-import { TeamController } from "./controllers/team.controller.js";
-import { JobsController } from "./controllers/jobs.controller.js";
+import { createAuthService } from "./services/auth.service.js";
+import { createDatabasesService } from "./services/databases.service.js";
+import { createPlansService } from "./services/plans.service.js";
+import { createTeamService } from "./services/team.service.js";
+import { createJobsService } from "./services/jobs.service.js";
+import { createRunnersService } from "./services/runners.service.js";
+import { createAuthHandlers } from "./controllers/auth.controller.js";
+import { createDatabasesHandlers } from "./controllers/databases.controller.js";
+import { createPlansHandlers } from "./controllers/plans.controller.js";
+import { createTeamHandlers } from "./controllers/team.controller.js";
+import { createJobsHandlers } from "./controllers/jobs.controller.js";
+import { createRunnersHandlers } from "./controllers/runners.controller.js";
 import { SESSION_COOKIE } from "./lib/session.js";
 import type { AuthUser } from "@revenant/shared";
 import type { Database } from "./db/index.js";
@@ -59,20 +61,18 @@ export async function buildApp(env: Env) {
   const db = createDb(env.DATABASE_URL);
   app.decorate("db", db);
 
-  const authService = new AuthService(db, env);
-  const databasesService = new DatabasesService(db, env.MASTER_KEY);
-  const plansService = new PlansService(db);
-  const teamService = new TeamService(db);
-  const jobsService = new JobsService(db, env.MASTER_KEY);
-
   await rootHealthRoutes(app);
   await registerV1Routes(app, {
-    authController: new AuthController(authService),
-    databasesController: new DatabasesController(databasesService),
-    plansController: new PlansController(plansService),
-    teamController: new TeamController(teamService),
-    jobsController: new JobsController(jobsService),
+    authHandlers: createAuthHandlers(createAuthService(db, env)),
+    databasesHandlers: createDatabasesHandlers(
+      createDatabasesService(db, env.MASTER_KEY)
+    ),
+    plansHandlers: createPlansHandlers(createPlansService(db)),
+    teamHandlers: createTeamHandlers(createTeamService(db)),
+    jobsHandlers: createJobsHandlers(createJobsService(db, env.MASTER_KEY)),
+    runnersHandlers: createRunnersHandlers(createRunnersService(db)),
     env,
+    db,
   });
 
   return app;

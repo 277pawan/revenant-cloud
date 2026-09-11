@@ -3,7 +3,7 @@ import type { DatabaseResource, Paginated } from "@revenant/shared";
 import type { Database } from "../db/index.js";
 import { databaseCredentials, databases, validationPlans } from "../db/schema.js";
 import { encryptSecret } from "../lib/crypto.js";
-import { AppError } from "../lib/errors.js";
+import { createAppError } from "../lib/errors.js";
 import type {
   CreateDatabaseInput,
   UpdateDatabaseInput,
@@ -37,12 +37,74 @@ function toResource(
   };
 }
 
-export class DatabasesService {
-  constructor(
-    private db: Database,
-    private masterKey: string
-  ) {}
+export function createDatabasesService(db: Database, masterKey: string) {
 
+  async function upsertCredential(
+    organizationId: string,
+    databaseId: string,
+    plainPassword: string
+  ): Promise<void> {
+    const encrypted = encryptSecret(plainPassword, masterKey);
+    const existing = await db
+      .select({ id: databaseCredentials.id })
+      .from(databaseCredentials)
+      .where(eq(databaseCredentials.databaseId, databaseId))
+      .limit(1);
+
+    if (existing[0]) {
+      await db
+        .update(databaseCredentials)
+        .set({
+          ciphertext: encrypted.ciphertext,
+          iv: encrypted.iv,
+          authTag: encrypted.authTag,
+          keyVersion: 1,
+          updatedAt: new Date(),
+        })
+        .where(eq(databaseCredentials.id, existing[0].id));
+    } else {
+      await db.insert(databaseCredentials).values({
+        organizationId,
+        databaseId,
+        ciphertext: encrypted.ciphertext,
+        iv: encrypted.iv,
+        authTag: encrypted.authTag,
+        keyVersion: 1,
+      });
+    }
+  }
+
+  async function getById(
+    organizationId: string,
+    id: string
+  ): Promise<DatabaseResource> {
+    const rows = await db
+      .select({
+        db: databases,
+        hasCredentials: sql<boolean>`(${databaseCredentials.id} is not null)`,
+        hasValidationPlan: sql<boolean>`(${validationPlans.id} is not null)`,
+      })
+      .from(databases)
+      .leftJoin(
+        databaseCredentials,
+        eq(databaseCredentials.databaseId, databases.id)
+      )
+      .leftJoin(validationPlans, eq(validationPlans.databaseId, databases.id))
+      .where(and(eq(databases.id, id), eq(databases.organizationId, organizationId)))
+      .limit(1);
+
+    const row = rows[0];
+    if (!row) {
+      throw createAppError(404, "Database not found", "NOT_FOUND");
+    }
+    return toResource(
+      row.db,
+      Boolean(row.hasCredentials),
+      Boolean(row.hasValidationPlan)
+    );
+  }
+
+  return {
   async list(
     organizationId: string,
     pagination: PaginationQueryInput
@@ -50,14 +112,14 @@ export class DatabasesService {
     const { page, pageSize } = pagination;
     const offset = paginationOffset(page, pageSize);
 
-    const [totalRow] = await this.db
+    const [totalRow] = await db
       .select({ value: count() })
       .from(databases)
       .where(eq(databases.organizationId, organizationId));
 
     const total = Number(totalRow?.value ?? 0);
 
-    const rows = await this.db
+    const rows = await db
       .select({
         db: databases,
         hasCredentials: sql<boolean>`(${databaseCredentials.id} is not null)`,
@@ -80,40 +142,15 @@ export class DatabasesService {
       ),
       pagination: paginationMeta(total, page, pageSize),
     };
-  }
+  },
 
-  async getById(organizationId: string, id: string): Promise<DatabaseResource> {
-    const rows = await this.db
-      .select({
-        db: databases,
-        hasCredentials: sql<boolean>`(${databaseCredentials.id} is not null)`,
-        hasValidationPlan: sql<boolean>`(${validationPlans.id} is not null)`,
-      })
-      .from(databases)
-      .leftJoin(
-        databaseCredentials,
-        eq(databaseCredentials.databaseId, databases.id)
-      )
-      .leftJoin(validationPlans, eq(validationPlans.databaseId, databases.id))
-      .where(and(eq(databases.id, id), eq(databases.organizationId, organizationId)))
-      .limit(1);
-
-    const row = rows[0];
-    if (!row) {
-      throw new AppError(404, "Database not found", "NOT_FOUND");
-    }
-    return toResource(
-      row.db,
-      Boolean(row.hasCredentials),
-      Boolean(row.hasValidationPlan)
-    );
-  }
+  getById,
 
   async create(
     organizationId: string,
     input: CreateDatabaseInput
   ): Promise<DatabaseResource> {
-    const [row] = await this.db
+    const [row] = await db
       .insert(databases)
       .values({
         organizationId,
@@ -131,26 +168,26 @@ export class DatabasesService {
 
     let hasCredentials = false;
     if (input.password) {
-      await this.upsertCredential(organizationId, row.id, input.password);
+      await upsertCredential(organizationId, row.id, input.password);
       hasCredentials = true;
     }
 
     return toResource(row, hasCredentials, false);
-  }
+  },
 
   async update(
     organizationId: string,
     id: string,
     input: UpdateDatabaseInput
   ): Promise<DatabaseResource> {
-    const existing = await this.db
+    const existing = await db
       .select()
       .from(databases)
       .where(and(eq(databases.id, id), eq(databases.organizationId, organizationId)))
       .limit(1);
 
     if (!existing[0]) {
-      throw new AppError(404, "Database not found", "NOT_FOUND");
+      throw createAppError(404, "Database not found", "NOT_FOUND");
     }
 
     const patch: Partial<typeof databases.$inferInsert> = {
@@ -166,7 +203,7 @@ export class DatabasesService {
     if (input.region !== undefined) patch.region = input.region;
     if (input.description !== undefined) patch.description = input.description;
 
-    const [row] = await this.db
+    const [row] = await db
       .update(databases)
       .set(patch)
       .where(and(eq(databases.id, id), eq(databases.organizationId, organizationId)))
@@ -174,7 +211,7 @@ export class DatabasesService {
 
     if (input.password !== undefined) {
       if (input.password === "") {
-        await this.db
+        await db
           .delete(databaseCredentials)
           .where(
             and(
@@ -183,56 +220,24 @@ export class DatabasesService {
             )
           );
       } else {
-        await this.upsertCredential(organizationId, id, input.password);
+        await upsertCredential(organizationId, id, input.password);
       }
     }
 
-    return this.getById(organizationId, row.id);
-  }
+    return getById(organizationId, row.id);
+  },
 
   async delete(organizationId: string, id: string): Promise<void> {
-    const deleted = await this.db
+    const deleted = await db
       .delete(databases)
       .where(and(eq(databases.id, id), eq(databases.organizationId, organizationId)))
       .returning({ id: databases.id });
 
     if (!deleted[0]) {
-      throw new AppError(404, "Database not found", "NOT_FOUND");
+      throw createAppError(404, "Database not found", "NOT_FOUND");
     }
   }
-
-  private async upsertCredential(
-    organizationId: string,
-    databaseId: string,
-    plainPassword: string
-  ): Promise<void> {
-    const encrypted = encryptSecret(plainPassword, this.masterKey);
-    const existing = await this.db
-      .select({ id: databaseCredentials.id })
-      .from(databaseCredentials)
-      .where(eq(databaseCredentials.databaseId, databaseId))
-      .limit(1);
-
-    if (existing[0]) {
-      await this.db
-        .update(databaseCredentials)
-        .set({
-          ciphertext: encrypted.ciphertext,
-          iv: encrypted.iv,
-          authTag: encrypted.authTag,
-          keyVersion: 1,
-          updatedAt: new Date(),
-        })
-        .where(eq(databaseCredentials.id, existing[0].id));
-    } else {
-      await this.db.insert(databaseCredentials).values({
-        organizationId,
-        databaseId,
-        ciphertext: encrypted.ciphertext,
-        iv: encrypted.iv,
-        authTag: encrypted.authTag,
-        keyVersion: 1,
-      });
-    }
-  }
+  };
 }
+
+export type DatabasesService = ReturnType<typeof createDatabasesService>;

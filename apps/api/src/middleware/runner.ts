@@ -1,12 +1,61 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
+import { and, eq, isNull } from "drizzle-orm";
 import type { Env } from "../config/env.js";
+import type { Database } from "../db/index.js";
+import { runners } from "../db/schema.js";
+import { hashRunnerToken } from "../lib/runner-token.js";
 
-/** Runner auth via Authorization: Bearer <RUNNER_TOKEN> */
-export function requireRunner(env: Env) {
+export type RunnerAuthContext =
+  | { type: "stub"; organizationId: null }
+  | { type: "org"; organizationId: string; runnerId: string; kind: "agent" | "ci" };
+
+declare module "fastify" {
+  interface FastifyRequest {
+    runnerAuth?: RunnerAuthContext;
+  }
+}
+
+/**
+ * Accepts either:
+ * - global RUNNER_TOKEN → stub (any org, marked simulated)
+ * - org runner token (rvn_…) → claims only that org's jobs
+ */
+export function requireRunner(env: Env, db: Database) {
   return async (request: FastifyRequest, reply: FastifyReply) => {
     const auth = request.headers.authorization;
-    if (!auth?.startsWith("Bearer ") || auth.slice(7) !== env.RUNNER_TOKEN) {
+    if (!auth?.startsWith("Bearer ")) {
       return reply.status(401).send({ error: "Unauthorized runner", code: "UNAUTHORIZED" });
     }
+
+    const token = auth.slice(7);
+
+    if (token === env.RUNNER_TOKEN) {
+      request.runnerAuth = { type: "stub", organizationId: null };
+      return;
+    }
+
+    const hash = hashRunnerToken(token);
+    const rows = await db
+      .select()
+      .from(runners)
+      .where(and(eq(runners.tokenHash, hash), isNull(runners.revokedAt)))
+      .limit(1);
+
+    if (!rows[0]) {
+      return reply.status(401).send({ error: "Unauthorized runner", code: "UNAUTHORIZED" });
+    }
+
+    const kind = rows[0].kind === "ci" ? "ci" : "agent";
+    request.runnerAuth = {
+      type: "org",
+      organizationId: rows[0].organizationId,
+      runnerId: rows[0].id,
+      kind,
+    };
+
+    await db
+      .update(runners)
+      .set({ lastSeenAt: new Date() })
+      .where(eq(runners.id, rows[0].id));
   };
 }

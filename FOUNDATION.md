@@ -76,13 +76,16 @@ No exceptions. Cross-tenant leaks are company-ending bugs.
 - [x] `validation_plans` (yaml text per database) + UI
 - [x] Team invite / list / role update / remove (admin)
 
-### Phase 2 — in progress
+### Phase 2 — ✅ complete (jobs + execution)
 
 - [x] `jobs` + `job_results` tables
 - [x] Trigger job API + paginated list + job detail
-- [x] Runner claim/complete API (`RUNNER_TOKEN`) + stub runner
-- [x] Jobs list + job detail UI
-- [ ] Replace stub with real `revenant verify` CLI spawn
+- [x] Runner claim/complete API
+- [x] **Embedded worker** on `npm run dev` (no separate runner terminal required)
+- [x] Org-scoped runners (agent | ci) for self-hosted / CI
+- [x] Wire execution to real `revenant verify` when CLI is available (`REVENANT_CLI_PATH` or sibling binary)
+- [x] Monaco YAML editor + format + checks preview (CLI-shaped default plan)
+- [x] Jobs list + job detail UI (Simulated badge when metadata fallback)
 - [ ] Polish job detail to Figma (evidence download later)
 
 ### Phase 3

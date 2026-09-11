@@ -13,7 +13,8 @@
     "db:drop": "tsx src/db/drop.ts",
     "db:reset": "tsx src/db/drop.ts && tsx src/db/migrate.ts",
     "db:studio": "drizzle-kit studio",
-    "runner:stub": "tsx src/runner/stub-runner.ts"
+    "runner:stub": "tsx src/runner/stub-runner.ts",
+    "runner:agent": "tsx src/runner/agent-runner.ts"
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.2",

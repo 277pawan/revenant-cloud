@@ -202,7 +202,12 @@ export type JobStatus =
 
 export type JobTrigger = "manual" | "schedule";
 
+/** How the job was executed — stub is never real proof */
+export type JobExecutionMode = "stub" | "agent" | "ci";
+
 export type JobCheckStatus = "pass" | "fail" | "skip";
+
+export type RunnerKind = "agent" | "ci";
 
 export interface JobResource {
   id: string;
@@ -210,6 +215,7 @@ export interface JobResource {
   databaseName: string;
   status: JobStatus | string;
   trigger: JobTrigger | string;
+  executionMode: JobExecutionMode | string | null;
   triggeredByUserId: string | null;
   errorMessage: string | null;
   rtoSeconds: number | null;
@@ -249,6 +255,7 @@ export interface CompleteJobRequest {
   status: "pass" | "fail" | "error";
   errorMessage?: string;
   rtoSeconds?: number;
+  executionMode?: JobExecutionMode;
   results: Array<{
     checkName: string;
     checkType: string;
@@ -256,4 +263,23 @@ export interface CompleteJobRequest {
     message?: string;
     durationMs?: number;
   }>;
+}
+
+export interface RunnerResource {
+  id: string;
+  name: string;
+  kind: RunnerKind | string;
+  tokenPrefix: string;
+  lastSeenAt: string | null;
+  createdAt: string;
+  revokedAt: string | null;
+}
+
+export interface CreateRunnerRequest {
+  name: string;
+  kind: RunnerKind;
+}
+
+export interface CreateRunnerResponse {
+  runner: RunnerResource & { token: string };
 }

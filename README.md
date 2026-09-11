@@ -20,6 +20,8 @@ npm run dev
 
 API: http://localhost:8080/health
 
+Jobs are processed by an **embedded worker** inside the API (development default). You do **not** need `runner:stub` / `runner:agent` for local demo. See [RUNNERS.md](./RUNNERS.md).
+
 ## Database commands (from repo root)
 
 | Command | What it does |

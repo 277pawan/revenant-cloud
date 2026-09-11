@@ -109,6 +109,7 @@ export const validationPlans = pgTable(
 /**
  * Restore validation jobs — Phase 2.
  * status: pending → running → pass | fail | error | cancelled
+ * executionMode: stub (local fake) | agent (self-hosted) | ci (GitHub Actions etc.)
  */
 export const jobs = pgTable("jobs", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -120,6 +121,9 @@ export const jobs = pgTable("jobs", {
     .references(() => databases.id, { onDelete: "cascade" }),
   status: varchar("status", { length: 50 }).notNull().default("pending"),
   trigger: varchar("trigger", { length: 50 }).notNull().default("manual"),
+  /** stub | agent | ci — set when a runner claims the job */
+  executionMode: varchar("execution_mode", { length: 50 }),
+  claimedByRunnerId: uuid("claimed_by_runner_id"),
   triggeredByUserId: uuid("triggered_by_user_id").references(() => users.id, {
     onDelete: "set null",
   }),
@@ -129,6 +133,26 @@ export const jobs = pgTable("jobs", {
   finishedAt: timestamp("finished_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * Per-org runners (self-hosted agent or CI).
+ * Token shown once at create; only sha256 hash stored.
+ * Global RUNNER_TOKEN remains for local stub only.
+ */
+export const runners = pgTable("runners", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  organizationId: uuid("organization_id")
+    .notNull()
+    .references(() => organizations.id, { onDelete: "cascade" }),
+  name: varchar("name", { length: 255 }).notNull(),
+  /** agent | ci */
+  kind: varchar("kind", { length: 50 }).notNull().default("agent"),
+  tokenHash: text("token_hash").notNull(),
+  tokenPrefix: varchar("token_prefix", { length: 12 }).notNull(),
+  lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 /** Per-check results for a job */
@@ -155,3 +179,4 @@ export type DatabaseCredential = typeof databaseCredentials.$inferSelect;
 export type ValidationPlan = typeof validationPlans.$inferSelect;
 export type Job = typeof jobs.$inferSelect;
 export type JobResult = typeof jobResults.$inferSelect;
+export type Runner = typeof runners.$inferSelect;
