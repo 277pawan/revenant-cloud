@@ -88,6 +88,14 @@ No exceptions. Cross-tenant leaks are company-ending bugs.
 - [x] Jobs list + job detail UI (Simulated badge when metadata fallback)
 - [ ] Polish job detail to Figma (evidence download later)
 
+### Phase 2.5 — Agent Box
+
+- [x] Embedded worker claim/execute/complete (in `apps/api/src/runner`)
+- [x] **Agent Box moved out** → sibling repo `revenant-agent`
+- [x] Settings → Agent Box UI: install steps, `agent.yaml`, last-seen / online
+- [ ] Packaged binary / public Docker image for customers
+- [ ] systemd unit template in Settings download
+
 ### Phase 3
 
 - [ ] KMS / key rotation for `MASTER_KEY` (encryption already shipped in Phase 1)

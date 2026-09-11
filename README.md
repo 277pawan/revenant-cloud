@@ -20,7 +20,17 @@ npm run dev
 
 API: http://localhost:8080/health
 
-Jobs are processed by an **embedded worker** inside the API (development default). You do **not** need `runner:stub` / `runner:agent` for local demo. See [RUNNERS.md](./RUNNERS.md).
+Jobs are processed by an **embedded worker** inside the API (development default).
+
+For customer-style off-server execution, use the separate **Agent Box** app:
+
+```bash
+cd ../revenant-agent
+cp agent.example.yaml agent.yaml   # token from Settings → Agent Box
+npm install && npm start
+```
+
+See [RUNNERS.md](./RUNNERS.md).
 
 ## Database commands (from repo root)
 

@@ -1,5 +1,5 @@
 /**
- * Shared poll loop used by embedded API worker, stub script, and agent script.
+ * Shared poll loop — Agent Box, embedded API worker, stub script.
  */
 import {
   executeClaimedJob,
