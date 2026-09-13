@@ -92,7 +92,7 @@ No exceptions. Cross-tenant leaks are company-ending bugs.
 - [x] Token issue/rotate in-place (one active row per plan)
 - [x] Workflows UI: list → detail → run (React Flow graph) — see `revenant-cloud-web`
 - [x] Services page: agent tokens only (not duplicate of workflows)
-- [ ] Docker Hub publish + customer pull test — **see Phase 5**
+- [ ] Docker Hub publish + customer pull test — **Phase 5.1: image builds CLI in Docker; Hub after local smoke**
 
 ### Phase 3 — AWS restore (CLI + runner)
 

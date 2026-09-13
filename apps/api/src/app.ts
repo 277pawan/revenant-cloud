@@ -10,6 +10,7 @@ import { createAuthService } from "./services/auth.service.js";
 import { createAuthProvidersService } from "./services/auth-providers.service.js";
 import { createDatabasesService } from "./services/databases.service.js";
 import { createPlansService } from "./services/plans.service.js";
+import { createYamlComposerService } from "./services/yaml-composer.service.js";
 import { createTeamService } from "./services/team.service.js";
 import { createJobsService } from "./services/jobs.service.js";
 import { createRunnersService } from "./services/runners.service.js";
@@ -28,8 +29,10 @@ import { createEvidenceHandlers } from "./controllers/evidence.controller.js";
 import { createWebhooksHandlers } from "./controllers/webhooks.controller.js";
 import { createAuditHandlers } from "./controllers/audit.controller.js";
 import { createDashboardHandlers } from "./controllers/dashboard.controller.js";
+import { createPublicHandlers } from "./controllers/public.controller.js";
 import { createDashboardService } from "./services/dashboard.service.js";
 import { SESSION_COOKIE } from "./lib/session.js";
+import { isAllowedCorsOrigin, parseCorsOrigins } from "./lib/cors-origins.js";
 import type { AuthUser } from "@revenant/shared";
 import type { Database } from "./db/index.js";
 
@@ -54,8 +57,11 @@ export async function buildApp(env: Env) {
 
   app.decorate("config", env);
 
+  const corsOrigins = parseCorsOrigins(env.CORS_ORIGIN);
   await app.register(cors, {
-    origin: env.CORS_ORIGIN,
+    origin: (origin, cb) => {
+      cb(null, isAllowedCorsOrigin(origin, corsOrigins));
+    },
     credentials: true,
   });
 
@@ -78,15 +84,20 @@ export async function buildApp(env: Env) {
   const webhooksService = createWebhooksService(db, env.MASTER_KEY);
 
   await rootHealthRoutes(app);
+  const authProvidersService = createAuthProvidersService(db, env);
   await registerV1Routes(app, {
     authHandlers: createAuthHandlers(
       createAuthService(db, env),
-      createAuthProvidersService(db, env)
+      authProvidersService,
+      env
     ),
     databasesHandlers: createDatabasesHandlers(
       createDatabasesService(db, env.MASTER_KEY)
     ),
-    plansHandlers: createPlansHandlers(createPlansService(db)),
+    plansHandlers: createPlansHandlers(
+      createPlansService(db),
+      createYamlComposerService(env)
+    ),
     teamHandlers: createTeamHandlers(createTeamService(db)),
     jobsHandlers: createJobsHandlers(
       jobsService,
@@ -103,6 +114,7 @@ export async function buildApp(env: Env) {
     webhooksHandlers: createWebhooksHandlers(webhooksService, auditService),
     auditHandlers: createAuditHandlers(auditService),
     dashboardHandlers: createDashboardHandlers(createDashboardService(db)),
+    publicHandlers: createPublicHandlers(env, authProvidersService),
     env,
     db,
     jobsService,

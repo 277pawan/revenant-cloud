@@ -10,6 +10,7 @@ export function setSessionCookie(reply: FastifyReply, token: string, env: Env) {
     sameSite: "lax",
     secure: env.COOKIE_SECURE,
     maxAge: 7 * 24 * 60 * 60,
+    ...(env.COOKIE_DOMAIN ? { domain: env.COOKIE_DOMAIN } : {}),
   });
 }
 
@@ -17,5 +18,6 @@ export function clearSessionCookie(reply: FastifyReply, env: Env) {
   reply.clearCookie(SESSION_COOKIE, {
     path: "/",
     secure: env.COOKIE_SECURE,
+    ...(env.COOKIE_DOMAIN ? { domain: env.COOKIE_DOMAIN } : {}),
   });
 }

@@ -4,8 +4,9 @@ import path from "node:path";
 import { and, desc, eq, ilike, or, sql } from "drizzle-orm";
 import type { EvidenceArtifactResource, JobDetailResource } from "@revenant/shared";
 import type { Database } from "../db/index.js";
-import { databases, evidenceArtifacts, jobs } from "../db/schema.js";
+import { databases, evidenceArtifacts, jobs, organizations } from "../db/schema.js";
 import { createAppError } from "../lib/errors.js";
+import { renderEvidencePdf } from "../lib/evidence-pdf.js";
 import {
   paginationMeta,
   paginationOffset,
@@ -159,6 +160,34 @@ export function createEvidenceService(db: Database, evidenceDir: string) {
       }
 
       return { body, artifact: rows[0] };
+    },
+
+    async getPdf(organizationId: string, id: string) {
+      const { body, artifact } = await this.getDownload(organizationId, id);
+      let parsed: { job?: JobDetailResource; archivedAt?: string };
+      try {
+        parsed = JSON.parse(body) as { job?: JobDetailResource; archivedAt?: string };
+      } catch {
+        throw createAppError(500, "Evidence JSON is unreadable", "INTEGRITY");
+      }
+      if (!parsed.job) {
+        throw createAppError(500, "Evidence JSON is missing job data", "INTEGRITY");
+      }
+
+      const [org] = await db
+        .select({ name: organizations.name })
+        .from(organizations)
+        .where(eq(organizations.id, organizationId))
+        .limit(1);
+
+      const pdf = await renderEvidencePdf({
+        job: parsed.job,
+        organizationName: org?.name ?? "Organization",
+        sha256: artifact.sha256,
+        archivedAt: parsed.archivedAt,
+      });
+
+      return { pdf, artifact };
     },
   };
 }

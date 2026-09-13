@@ -25,7 +25,7 @@
 
 **Enforcement:** limits live in `packages/shared/src/plans.ts` — wire API guards when Razorpay/Stripe is ready.
 
-**Future:** marketing website + SSO → login passes `organizationPlan` from billing (same JWT claim shape we use today).
+**Future:** marketing website consumes `GET /api/v1/public/catalog` + SSO; login already carries `organizationPlan`. Billing (Razorpay recommended for INR) comes after this.
 
 ---
 
@@ -35,14 +35,15 @@
 
 - [x] Dashboard answers “are we OK?” at a glance
 - [x] Onboarding checklist
-- [ ] **One-click “Full DR drill”** (snapshot → verify → reap) from UI
+- [x] **One-click “Full DR drill”** (AWS: snapshot → verify → reap; direct: validate)
 - [ ] **Sample workflow template** (import freetier YAML)
+- [x] **Proof Composer** — schema in, revenant.yaml out (Mistral, one shot, no chat)
 - [ ] Hosted staging URL (Phase 5)
 
 ### B. Proof people can show their boss
 
-- [x] Evidence vault + download
-- [ ] **PDF / share link** from evidence
+- [x] Evidence vault + branded PDF download (share the file yourself)
+- [x] Public catalog API for the future marketing site (`GET /api/v1/public/catalog`)
 - [ ] Slack alert with RTO + pass/fail (test Slack integration)
 - [ ] Email report already works — polish template
 
@@ -63,8 +64,8 @@
 ### E. Global
 
 - [ ] Phase 5 deploy (API + web + agent Docker)
-- [ ] Marketing site + docs
-- [ ] SSO (website + app) → plan on login
+- [ ] Marketing site UI (API catalog is ready)
+- [ ] SSO token exchange (Google first)
 - [ ] HTTPS, backups, monitoring
 
 ---

@@ -2,6 +2,7 @@ import { z } from "zod";
 
 export const createJobSchema = z.object({
   databaseId: z.string().uuid(),
+  drillKind: z.enum(["verify", "full"]).default("full"),
 });
 
 export const jobIdParamSchema = z.object({

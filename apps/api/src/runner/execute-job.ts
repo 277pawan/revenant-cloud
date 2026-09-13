@@ -19,6 +19,7 @@ export type ClaimedPayload = {
   recovery: AwsRecoveryConfig | null;
   awsCredentials: RunnerAwsCredentials | null;
   planYaml: string | null;
+  fullDrill?: boolean;
 };
 
 export type CheckResult = {
@@ -279,6 +280,9 @@ function buildCliEnv(
         SANDBOX_USER: username,
         SANDBOX_PASSWORD: claimed.password,
         SANDBOX_DBNAME: databaseName,
+        ...(buildDatabaseUrl(claimed)
+          ? { DATABASE_URL: buildDatabaseUrl(claimed)! }
+          : {}),
       },
     };
   }
@@ -339,6 +343,37 @@ async function runWithCli(
     await writeFile(configPath, yaml, "utf8");
 
     const timeoutMs = awsMode ? AWS_VERIFY_TIMEOUT_MS : DIRECT_VERIFY_TIMEOUT_MS;
+    const results: CheckResult[] = [];
+    const fullDrill = Boolean(claimed.fullDrill && awsMode);
+
+    if (fullDrill) {
+      const snapStarted = Date.now();
+      const snap = await runCommand(cliPath, ["snapshot", "-c", configPath], {
+        cwd: dir,
+        env,
+        timeoutMs: AWS_VERIFY_TIMEOUT_MS,
+      });
+      const snapOk = snap.code === 0;
+      results.push({
+        checkName: "snapshot",
+        checkType: "snapshot",
+        status: snapOk ? "pass" : "fail",
+        message: snapOk
+          ? (snap.stdout || "RDS snapshot created").slice(0, 400)
+          : (snap.stderr || snap.stdout || "revenant snapshot failed").slice(0, 500),
+        durationMs: Date.now() - snapStarted,
+      });
+      if (!snapOk) {
+        return {
+          status: "fail",
+          executionMode,
+          usedCli: true,
+          rtoSeconds: Math.max(1, Math.round((Date.now() - started) / 1000)),
+          errorMessage: results[0]?.message,
+          results,
+        };
+      }
+    }
 
     const { code, stdout, stderr } = await runCommand(
       cliPath,
@@ -357,9 +392,9 @@ async function runWithCli(
       report = {};
     }
 
-    const results = mapCliReport(report);
-    if (results.length === 0 && (stdout || stderr)) {
-      results.push({
+    const verifyResults = mapCliReport(report);
+    if (verifyResults.length === 0 && (stdout || stderr)) {
+      verifyResults.push({
         checkName: "verify",
         checkType: "verify",
         status: code === 0 ? "pass" : "fail",
@@ -367,11 +402,33 @@ async function runWithCli(
         durationMs: Date.now() - started,
       });
     }
+    results.push(...verifyResults);
 
-    const failed =
+    const verifyFailed =
       code !== 0 ||
       report.status?.toUpperCase() === "FAIL" ||
-      results.some((r) => r.status === "fail");
+      verifyResults.some((r) => r.status === "fail");
+
+    if (fullDrill) {
+      const reapStarted = Date.now();
+      const reap = await runCommand(
+        cliPath,
+        ["reap", "--max-age", "2h", "--region", claimed.recovery?.region ?? ""],
+        { cwd: dir, env, timeoutMs: 180_000 }
+      );
+      results.push({
+        checkName: "reap",
+        checkType: "reap",
+        status: reap.code === 0 ? "pass" : "skip",
+        message:
+          reap.code === 0
+            ? (reap.stdout || "Orphan sandboxes cleaned").slice(0, 400)
+            : (reap.stderr || reap.stdout || "reap skipped").slice(0, 400),
+        durationMs: Date.now() - reapStarted,
+      });
+    }
+
+    const failed = verifyFailed || results.some((r) => r.status === "fail");
 
     return {
       status: failed ? "fail" : "pass",

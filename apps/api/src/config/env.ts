@@ -24,7 +24,14 @@ const envSchema = z.object({
         return false;
       }
     }, "MASTER_KEY must be base64 of exactly 32 bytes (openssl rand -base64 32)"),
+  /** Comma-separated origins: app + future marketing site */
   CORS_ORIGIN: z.string().default("http://localhost:5173"),
+  /** Public app origin (SSO return + catalog login URL) */
+  PUBLIC_APP_URL: z.string().default("http://localhost:5173"),
+  /** Optional marketing site origin — add the same value to CORS_ORIGIN */
+  PUBLIC_MARKETING_URL: z.string().optional(),
+  /** e.g. .revenant.cloud so website + app share the session cookie */
+  COOKIE_DOMAIN: z.string().optional(),
   COOKIE_SECURE: z
     .enum(["true", "false"])
     .default("false")
@@ -82,6 +89,13 @@ const envSchema = z.object({
   OAUTH_MICROSOFT_CLIENT_SECRET: z.string().optional(),
   /** Public API base for OAuth redirect URIs (defaults to localhost API) */
   OAUTH_REDIRECT_BASE_URL: z.string().default("http://localhost:8080"),
+  /**
+   * Proof Composer — Mistral or OpenRouter (sk-or-v1-…).
+   * OpenRouter keys are auto-routed even if MISTRAL_API_URL points at api.mistral.ai.
+   */
+  MISTRAL_API_KEY: z.string().optional(),
+  MISTRAL_API_URL: z.string().optional(),
+  MISTRAL_MODEL: z.string().optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;

@@ -1,4 +1,4 @@
-import { and, count, desc, eq } from "drizzle-orm";
+import { and, desc, eq, ilike, or, sql } from "drizzle-orm";
 import type { Paginated, ValidationPlanResource } from "@revenant/shared";
 import type { Database } from "../db/index.js";
 import { databases, validationPlans } from "../db/schema.js";
@@ -7,7 +7,7 @@ import type { UpsertValidationPlanInput } from "../validations/plans.schema.js";
 import {
   paginationMeta,
   paginationOffset,
-  type PaginationQueryInput,
+  type ListSearchQueryInput,
 } from "../validations/pagination.schema.js";
 
 function toResource(
@@ -48,17 +48,30 @@ export function createPlansService(db: Database) {
   return {
   async list(
     organizationId: string,
-    pagination: PaginationQueryInput
+    query: ListSearchQueryInput
   ): Promise<Paginated<ValidationPlanResource>> {
-    const { page, pageSize } = pagination;
+    const { page, pageSize, search } = query;
     const offset = paginationOffset(page, pageSize);
 
-    const [totalRow] = await db
-      .select({ value: count() })
-      .from(validationPlans)
-      .where(eq(validationPlans.organizationId, organizationId));
+    const conditions = [eq(validationPlans.organizationId, organizationId)];
+    if (search) {
+      const term = `%${search}%`;
+      conditions.push(
+        or(
+          ilike(databases.name, term),
+          ilike(validationPlans.name, term)
+        )!
+      );
+    }
+    const whereClause = and(...conditions);
 
-    const total = Number(totalRow?.value ?? 0);
+    const [totalRow] = await db
+      .select({ value: sql<number>`count(*)::int` })
+      .from(validationPlans)
+      .innerJoin(databases, eq(databases.id, validationPlans.databaseId))
+      .where(whereClause);
+
+    const total = totalRow?.value ?? 0;
 
     const rows = await db
       .select({
@@ -67,7 +80,7 @@ export function createPlansService(db: Database) {
       })
       .from(validationPlans)
       .innerJoin(databases, eq(databases.id, validationPlans.databaseId))
-      .where(eq(validationPlans.organizationId, organizationId))
+      .where(whereClause)
       .orderBy(desc(validationPlans.updatedAt))
       .limit(pageSize)
       .offset(offset);

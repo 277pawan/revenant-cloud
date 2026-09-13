@@ -26,4 +26,16 @@ export async function plansRoutes(app: FastifyInstance, handlers: PlansHandlers)
     { preHandler: requirePermission("plans:write") },
     handlers.remove
   );
+
+  app.get(
+    "/validation-plans/composer",
+    { preHandler: requirePermission("plans:read") },
+    handlers.composerStatus
+  );
+
+  app.post(
+    "/validation-plans/compose",
+    { preHandler: requirePermission("plans:write") },
+    handlers.generateYaml
+  );
 }

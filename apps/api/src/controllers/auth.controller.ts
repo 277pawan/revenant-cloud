@@ -1,4 +1,5 @@
 import { eq } from "drizzle-orm";
+import { randomBytes } from "node:crypto";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { OAuthProviderId, OrganizationPlan } from "@revenant/shared";
 import { loginSchema, registerSchema } from "../validations/auth.schema.js";
@@ -7,12 +8,16 @@ import type { AuthProvidersService } from "../services/auth-providers.service.js
 import { organizations } from "../db/schema.js";
 import { sendHandlerError } from "../lib/http.js";
 import { createAppError } from "../lib/errors.js";
+import { parseCorsOrigins } from "../lib/cors-origins.js";
+import { sanitizeOAuthReturnTo, signOAuthState, verifyOAuthState } from "../lib/oauth-state.js";
+import type { Env } from "../config/env.js";
 
 const OAUTH_IDS = new Set<string>(["google", "github", "microsoft"]);
 
 export function createAuthHandlers(
   authService: AuthService,
-  authProvidersService: AuthProvidersService
+  authProvidersService: AuthProvidersService,
+  env: Env
 ) {
   return {
     register: async (request: FastifyRequest, reply: FastifyReply) => {
@@ -80,12 +85,16 @@ export function createAuthHandlers(
       }
 
       try {
-        const state = Buffer.from(
-          JSON.stringify({
-            n: Date.now(),
-            returnTo: (request.query as { returnTo?: string }).returnTo ?? "/",
-          })
-        ).toString("base64url");
+        const allowed = parseCorsOrigins(env.CORS_ORIGIN);
+        const returnTo = sanitizeOAuthReturnTo(
+          (request.query as { returnTo?: string }).returnTo,
+          allowed
+        );
+        const state = signOAuthState(env.JWT_SECRET, {
+          returnTo,
+          issuedAt: Date.now(),
+          nonce: randomBytes(8).toString("hex"),
+        });
 
         const url = authProvidersService.buildOAuthStartUrl(
           provider as OAuthProviderId,
@@ -107,10 +116,18 @@ export function createAuthHandlers(
       }
 
       try {
+        const q = request.query as { state?: string; code?: string };
+        if (q.state) {
+          try {
+            verifyOAuthState(env.JWT_SECRET, q.state);
+          } catch {
+            throw createAppError(400, "Invalid or expired OAuth state", "OAUTH_STATE");
+          }
+        }
         // Token exchange + user_auth_providers linking ships with marketing-site SSO.
         throw createAppError(
           501,
-          `${provider} callback is wired on the server — complete token exchange in the next SSO sprint`,
+          `${provider} callback is wired on the server — complete token exchange when the website SSO goes live`,
           "OAUTH_CALLBACK_PENDING"
         );
       } catch (err) {

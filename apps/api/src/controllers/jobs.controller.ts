@@ -10,6 +10,37 @@ import type { EvidenceService } from "../services/evidence.service.js";
 import type { WebhooksService } from "../services/webhooks.service.js";
 import type { AuditService } from "../services/audit.service.js";
 import { sendHandlerError } from "../lib/http.js";
+import type { EvidenceArtifactResource } from "@revenant/shared";
+
+async function ensureJobEvidence(
+  organizationId: string,
+  jobId: string,
+  jobsService: JobsService,
+  evidenceService: EvidenceService,
+  reply: FastifyReply
+): Promise<EvidenceArtifactResource | null> {
+  let artifact = await evidenceService.getByJobId(organizationId, jobId);
+
+  if (!artifact) {
+    const job = await jobsService.getById(organizationId, jobId);
+    if (!["pass", "fail", "error"].includes(job.status)) {
+      await reply.status(404).send({
+        error: "Report is available after the run finishes",
+        code: "NOT_READY",
+      });
+      return null;
+    }
+    await evidenceService.archiveFromJob(organizationId, job);
+    artifact = await evidenceService.getByJobId(organizationId, jobId);
+  }
+
+  if (!artifact) {
+    await reply.status(404).send({ error: "Evidence not found", code: "NOT_FOUND" });
+    return null;
+  }
+
+  return artifact;
+}
 
 export function createJobsHandlers(
   jobsService: JobsService,
@@ -74,7 +105,11 @@ export function createJobsHandlers(
           action: "job.create",
           resourceType: "job",
           resourceId: job.id,
-          metadata: { databaseId: job.databaseId, trigger: "manual" },
+          metadata: {
+            databaseId: job.databaseId,
+            trigger: job.trigger,
+            drillKind: body.data.drillKind,
+          },
         });
         return reply.status(201).send({ job });
       } catch (err) {
@@ -150,25 +185,14 @@ export function createJobsHandlers(
       const orgId = request.user.organizationId;
 
       try {
-        let artifact = await evidenceService.getByJobId(orgId, params.data.id);
-
-        if (!artifact) {
-          const job = await jobsService.getById(orgId, params.data.id);
-          if (!["pass", "fail", "error"].includes(job.status)) {
-            return reply.status(404).send({
-              error: "Report is available after the run finishes",
-              code: "NOT_READY",
-            });
-          }
-          await evidenceService.archiveFromJob(orgId, job);
-          artifact = await evidenceService.getByJobId(orgId, params.data.id);
-        }
-
-        if (!artifact) {
-          return reply
-            .status(404)
-            .send({ error: "Evidence not found", code: "NOT_FOUND" });
-        }
+        const artifact = await ensureJobEvidence(
+          orgId,
+          params.data.id,
+          jobsService,
+          evidenceService,
+          reply
+        );
+        if (!artifact) return;
 
         const { body, artifact: row } = await evidenceService.getDownload(
           orgId,
@@ -183,6 +207,39 @@ export function createJobsHandlers(
           .send(body);
       } catch (err) {
         return sendHandlerError(err, request, reply, "Failed to download report");
+      }
+    },
+
+    downloadEvidencePdf: async (request: FastifyRequest, reply: FastifyReply) => {
+      const params = jobIdParamSchema.safeParse(request.params);
+      if (!params.success) {
+        return reply
+          .status(400)
+          .send({ error: "Invalid job id", code: "VALIDATION_ERROR" });
+      }
+
+      const orgId = request.user.organizationId;
+
+      try {
+        const artifact = await ensureJobEvidence(
+          orgId,
+          params.data.id,
+          jobsService,
+          evidenceService,
+          reply
+        );
+        if (!artifact) return;
+
+        const { pdf, artifact: row } = await evidenceService.getPdf(orgId, artifact.id);
+        return reply
+          .header("Content-Type", "application/pdf")
+          .header(
+            "Content-Disposition",
+            `attachment; filename="revenant-evidence-${row.jobId}.pdf"`
+          )
+          .send(pdf);
+      } catch (err) {
+        return sendHandlerError(err, request, reply, "Failed to download PDF");
       }
     },
   };

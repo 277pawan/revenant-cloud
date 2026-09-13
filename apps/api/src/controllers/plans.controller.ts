@@ -1,16 +1,21 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import {
   databaseIdParamSchema,
+  generateValidationYamlSchema,
   upsertValidationPlanSchema,
 } from "../validations/plans.schema.js";
-import { paginationQuerySchema } from "../validations/pagination.schema.js";
+import { listSearchQuerySchema } from "../validations/pagination.schema.js";
 import type { PlansService } from "../services/plans.service.js";
+import type { YamlComposerService } from "../services/yaml-composer.service.js";
 import { sendHandlerError } from "../lib/http.js";
 
-export function createPlansHandlers(plansService: PlansService) {
+export function createPlansHandlers(
+  plansService: PlansService,
+  yamlComposerService: YamlComposerService
+) {
   return {
     list: async (request: FastifyRequest, reply: FastifyReply) => {
-      const query = paginationQuerySchema.safeParse(request.query);
+      const query = listSearchQuerySchema.safeParse(request.query);
       if (!query.success) {
         return reply
           .status(400)
@@ -83,6 +88,32 @@ export function createPlansHandlers(plansService: PlansService) {
           request,
           reply,
           "Failed to save validation plan"
+        );
+      }
+    },
+
+    composerStatus: async () => {
+      return yamlComposerService.status();
+    },
+
+    generateYaml: async (request: FastifyRequest, reply: FastifyReply) => {
+      const body = generateValidationYamlSchema.safeParse(request.body);
+      if (!body.success) {
+        return reply.status(400).send({
+          error: "Invalid request",
+          code: "VALIDATION_ERROR",
+          details: body.error.flatten().fieldErrors,
+        });
+      }
+
+      try {
+        return await yamlComposerService.generate(body.data);
+      } catch (err) {
+        return sendHandlerError(
+          err,
+          request,
+          reply,
+          "Failed to compose validation YAML"
         );
       }
     },

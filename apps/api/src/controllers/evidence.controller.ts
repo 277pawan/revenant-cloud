@@ -48,6 +48,31 @@ export function createEvidenceHandlers(evidenceService: EvidenceService) {
         return sendHandlerError(err, request, reply, "Failed to download evidence");
       }
     },
+
+    downloadPdf: async (request: FastifyRequest, reply: FastifyReply) => {
+      const params = evidenceIdParamSchema.safeParse(request.params);
+      if (!params.success) {
+        return reply
+          .status(400)
+          .send({ error: "Invalid evidence id", code: "VALIDATION_ERROR" });
+      }
+
+      try {
+        const { pdf, artifact } = await evidenceService.getPdf(
+          request.user.organizationId,
+          params.data.id
+        );
+        return reply
+          .header("Content-Type", "application/pdf")
+          .header(
+            "Content-Disposition",
+            `attachment; filename="revenant-evidence-${artifact.jobId}.pdf"`
+          )
+          .send(pdf);
+      } catch (err) {
+        return sendHandlerError(err, request, reply, "Failed to download PDF");
+      }
+    },
   };
 }
 

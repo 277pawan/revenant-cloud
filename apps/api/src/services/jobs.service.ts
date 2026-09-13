@@ -196,7 +196,7 @@ export function createJobsService(db: Database, masterKey: string) {
         organizationId,
         databaseId: input.databaseId,
         status: "pending",
-        trigger: "manual",
+        trigger: input.drillKind === "verify" ? "manual" : "full-drill",
         triggeredByUserId: userId,
       })
       .returning();
@@ -336,6 +336,9 @@ export function createJobsService(db: Database, masterKey: string) {
       planYaml: plan[0]?.yamlText ?? null,
       planVersion: plan[0]?.version ?? null,
       executionMode,
+      fullDrill:
+        updated.trigger === "full-drill" ||
+        (recoveryMode === "aws-rds" && updated.trigger === "schedule"),
     };
   },
 

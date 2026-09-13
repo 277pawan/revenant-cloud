@@ -17,4 +17,10 @@ export async function evidenceRoutes(
     { preHandler: requirePermission("evidence:read") },
     handlers.download
   );
+
+  app.get(
+    "/evidence/:id/pdf",
+    { preHandler: requirePermission("evidence:read") },
+    handlers.downloadPdf
+  );
 }

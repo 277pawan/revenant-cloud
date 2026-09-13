@@ -97,6 +97,7 @@ export interface AuthUser {
 
 export * from "./plans.js";
 export * from "./auth.js";
+export * from "./public.js";
 
 /** Fleet health for dashboard — why someone opens the app on Tuesday */
 export type FleetHealthStatus = "healthy" | "warning" | "critical" | "unknown";
@@ -275,6 +276,28 @@ export interface UpsertValidationPlanRequest {
   yamlText: string;
 }
 
+export interface YamlComposerStatus {
+  enabled: boolean;
+  provider: "mistral" | "openrouter" | null;
+  model: string | null;
+}
+
+export interface GenerateValidationYamlRequest {
+  schemaText: string;
+  intent?: string;
+  planName?: string;
+  layers?: string[];
+}
+
+export interface GenerateValidationYamlResponse {
+  yamlText: string;
+  checks: Array<{ type: string }>;
+  summary: {
+    total: number;
+    byType: Record<string, number>;
+  };
+}
+
 export interface ValidationPlanResponse {
   plan: ValidationPlanResource;
 }
@@ -309,7 +332,7 @@ export type JobStatus =
   | "error"
   | "cancelled";
 
-export type JobTrigger = "manual" | "schedule";
+export type JobTrigger = "manual" | "schedule" | "full-drill";
 
 /** How the job was executed — stub is never real proof */
 export type JobExecutionMode = "stub" | "agent" | "ci";
@@ -350,6 +373,8 @@ export interface JobDetailResource extends JobResource {
 
 export interface CreateJobRequest {
   databaseId: string;
+  /** full = snapshot, verify, reap on AWS; verify = latest snapshot or direct checks */
+  drillKind?: "verify" | "full";
 }
 
 export interface JobResponse {
@@ -385,6 +410,7 @@ export interface PlanServiceResource {
   databaseId: string;
   databaseName: string;
   planName: string;
+  recoveryMode: RecoveryMode | string;
   runner: PlanServiceRunner | null;
   jobs: JobResource[];
 }

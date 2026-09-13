@@ -7,6 +7,16 @@ Revenant Cloud auth is designed for **two humans**:
 
 Marketing website + app will share identity via **SSO** so `organizationPlan` is known at login.
 
+The marketing **frontend does not exist yet**. The API is ready:
+
+1. `GET /api/v1/public/catalog` — pricing + SSO provider flags (no auth).
+2. `CORS_ORIGIN` is comma-separated so `https://revenant.example` and `https://app.revenant.example` can both call the API with credentials.
+3. Set `COOKIE_DOMAIN=.revenant.example` later so the session cookie is shared.
+4. OAuth `state` is HMAC-signed; `returnTo` must be a relative path or an origin on the CORS list.
+5. `GET /api/v1/me` already returns `organizationPlan` — website and app use the same session.
+
+Do **not** build a public share URL for evidence. People download a PDF and share it themselves.
+
 ---
 
 ## Current (shipped)
@@ -19,8 +29,9 @@ Marketing website + app will share identity via **SSO** so `organizationPlan` is
 | `GET /api/v1/me` | Session user + plan from DB |
 | `GET /api/v1/auth/providers` | OAuth buttons + registration flags for UI |
 | `GET /api/v1/auth/invite/:token` | Preview org/role for invite link banner |
-| `GET /api/v1/auth/oauth/:provider/start` | Redirect to Google/GitHub/Microsoft when configured |
-| `GET /api/v1/auth/oauth/:provider/callback` | Stub — token exchange in SSO sprint |
+| `GET /api/v1/public/catalog` | Unauthenticated: plans, SSO button status, app login URL (for the future website) |
+| `GET /api/v1/auth/oauth/:provider/start` | HMAC-signed `state` + `returnTo` allowlist (app or marketing origin) |
+| `GET /api/v1/auth/oauth/:provider/callback` | Validates `state`; token exchange still 501 until website SSO |
 
 ## Database (migration `0011`)
 
@@ -65,6 +76,6 @@ App enforces limits from packages/shared/src/plans.ts
 
 ## Env vars
 
-See `.env.example` — `OAUTH_*_CLIENT_ID/SECRET` per provider.
+See `.env.example` — `OAUTH_*_CLIENT_ID/SECRET`, `PUBLIC_APP_URL`, `PUBLIC_MARKETING_URL`, `COOKIE_DOMAIN`.
 
-When unset, UI shows providers as **coming soon**; API returns `501` on OAuth start.
+When OAuth secrets are unset, UI shows providers as **coming soon**; API returns `501` on OAuth start.

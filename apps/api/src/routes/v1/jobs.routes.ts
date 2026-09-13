@@ -31,6 +31,12 @@ export async function jobsRoutes(
     handlers.downloadEvidence
   );
 
+  app.get(
+    "/jobs/:id/evidence/pdf",
+    { preHandler: requirePermission("evidence:read") },
+    handlers.downloadEvidencePdf
+  );
+
   app.post(
     "/jobs",
     { preHandler: requirePermission("jobs:run") },
