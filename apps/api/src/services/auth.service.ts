@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import type { FastifyReply } from "fastify";
-import type { AuthUser, UserRole } from "@revenant/shared";
+import type { AuthUser, OrganizationPlan, UserRole } from "@revenant/shared";
 import type { Database } from "../db/index.js";
 import { organizations, users } from "../db/schema.js";
 import { hashPassword, verifyPassword } from "../lib/password.js";
@@ -46,6 +46,7 @@ export function createAuthService(db: Database, env: Env) {
           role: "admin",
           organizationId: org.id,
           organizationName: org.name,
+          organizationPlan: (org.plan ?? "starter") as OrganizationPlan,
         },
       };
     } catch (err: unknown) {
@@ -73,6 +74,14 @@ export function createAuthService(db: Database, env: Env) {
       throw createAppError(401, "Invalid email or password", "INVALID_CREDENTIALS");
     }
 
+    if (!row.user.passwordHash) {
+      throw createAppError(
+        401,
+        "This account uses single sign-on. Continue with Google or GitHub.",
+        "OAUTH_REQUIRED"
+      );
+    }
+
     const valid = await verifyPassword(input.password, row.user.passwordHash);
     if (!valid) {
       throw createAppError(401, "Invalid email or password", "INVALID_CREDENTIALS");
@@ -84,6 +93,7 @@ export function createAuthService(db: Database, env: Env) {
       role: row.user.role as UserRole,
       organizationId: row.org.id,
       organizationName: row.org.name,
+      organizationPlan: (row.org.plan ?? "starter") as OrganizationPlan,
     };
   },
 

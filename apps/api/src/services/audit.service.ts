@@ -1,11 +1,11 @@
-import { desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, ilike, or, sql } from "drizzle-orm";
 import type { AuditEventResource } from "@revenant/shared";
 import type { Database } from "../db/index.js";
 import { auditEvents } from "../db/schema.js";
 import {
   paginationMeta,
   paginationOffset,
-  type PaginationQueryInput,
+  type ListSearchQueryInput,
 } from "../validations/pagination.schema.js";
 
 function toResource(row: typeof auditEvents.$inferSelect): AuditEventResource {
@@ -40,22 +40,38 @@ export function createAuditService(db: Database) {
       });
     },
 
-    async list(organizationId: string, pagination: PaginationQueryInput) {
-      const { page, pageSize } = pagination;
+    async list(organizationId: string, query: ListSearchQueryInput) {
+      const { page, pageSize, search } = query;
       const offset = paginationOffset(page, pageSize);
+
+      const conditions = [eq(auditEvents.organizationId, organizationId)];
+      if (search) {
+        const term = `%${search}%`;
+        conditions.push(
+          or(
+            ilike(auditEvents.action, term),
+            ilike(auditEvents.resourceType, term),
+            ilike(auditEvents.resourceId, term),
+            ilike(auditEvents.metadata, term),
+            sql`cast(${auditEvents.id} as text) ilike ${term}`,
+            sql`cast(${auditEvents.actorUserId} as text) ilike ${term}`
+          )!
+        );
+      }
+      const whereClause = and(...conditions);
 
       const [rows, countRow] = await Promise.all([
         db
           .select()
           .from(auditEvents)
-          .where(eq(auditEvents.organizationId, organizationId))
+          .where(whereClause)
           .orderBy(desc(auditEvents.createdAt))
           .limit(pageSize)
           .offset(offset),
         db
           .select({ count: sql<number>`count(*)::int` })
           .from(auditEvents)
-          .where(eq(auditEvents.organizationId, organizationId)),
+          .where(whereClause),
       ]);
 
       const total = countRow[0]?.count ?? 0;

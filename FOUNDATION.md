@@ -96,18 +96,21 @@ No exceptions. Cross-tenant leaks are company-ending bugs.
 
 ### Phase 3 — AWS restore (CLI + runner)
 
-- [ ] KMS / key rotation for `MASTER_KEY`
-- [ ] AWS snapshot + restore flow via runner
-- [ ] Store AWS keys in encrypted credential blob
+See [docs/PHASE3.md](./docs/PHASE3.md).
 
-### Phase 4 — in progress
+- [x] Store AWS keys in encrypted credential blob (`database_aws_credentials`)
+- [x] AWS snapshot + restore flow via runner (`recovery_mode: aws-rds`)
+- [ ] KMS / key rotation for `MASTER_KEY`
+- [ ] `revenant snapshot` + `reap` from cloud (optional)
+
+### Phase 4 — complete
 
 See [docs/PHASE4.md](./docs/PHASE4.md).
 
-- [x] Schedules table + CRUD API (scheduler worker next)
-- [ ] Evidence vault
-- [ ] Webhooks
-- [ ] Audit log
+- [x] Schedules + scheduler worker
+- [x] Evidence vault
+- [x] Webhooks / integrations
+- [x] Audit log
 
 ### Phase 5 — deploy
 

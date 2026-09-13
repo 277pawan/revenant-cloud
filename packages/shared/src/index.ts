@@ -92,6 +92,57 @@ export interface AuthUser {
   role: UserRole;
   organizationId: string;
   organizationName: string;
+  organizationPlan: OrganizationPlan;
+}
+
+export * from "./plans.js";
+export * from "./auth.js";
+
+/** Fleet health for dashboard — why someone opens the app on Tuesday */
+export type FleetHealthStatus = "healthy" | "warning" | "critical" | "unknown";
+
+export interface DashboardFleetRow {
+  databaseId: string;
+  databaseName: string;
+  recoveryMode: "direct" | "aws-rds";
+  health: FleetHealthStatus;
+  healthReason: string;
+  lastJobId: string | null;
+  lastJobStatus: string | null;
+  lastJobFinishedAt: string | null;
+  lastRtoSeconds: number | null;
+  hasValidationPlan: boolean;
+  hasCredentials: boolean;
+  hasAwsCredentials: boolean;
+  hasSchedule: boolean;
+  scheduleEnabled: boolean;
+  nextRunAt: string | null;
+  agentLastSeenAt: string | null;
+  agentOnline: boolean;
+}
+
+export interface DashboardOnboardingStep {
+  id: string;
+  label: string;
+  done: boolean;
+  href: string;
+}
+
+export interface DashboardOverview {
+  organizationPlan: OrganizationPlan;
+  summary: {
+    totalDatabases: number;
+    healthyCount: number;
+    warningCount: number;
+    criticalCount: number;
+    passRate7d: number | null;
+    avgRtoSeconds7d: number | null;
+    failures24h: number;
+    evidenceCount: number;
+    agentsOnline: number;
+  };
+  onboarding: DashboardOnboardingStep[];
+  fleet: DashboardFleetRow[];
 }
 
 export interface LoginRequest {
@@ -123,8 +174,25 @@ export interface HealthResponse {
 
 export type DatabaseEngine = "postgres";
 export type SslMode = "require" | "prefer" | "disable";
+/** direct = live Postgres; aws-rds = snapshot restore drill via CLI */
+export type RecoveryMode = "direct" | "aws-rds";
 
-/** Public database shape — never includes password */
+/** Runner-only recovery config returned on job claim */
+export interface AwsRecoveryConfig {
+  engine: "aws-rds";
+  sourceIdentifier: string;
+  region: string;
+  useFreetier: boolean;
+  sandboxInstanceClass: string | null;
+}
+
+/** Runner-only — never exposed on public database APIs */
+export interface RunnerAwsCredentials {
+  accessKeyId: string;
+  secretAccessKey: string;
+}
+
+/** Public database shape — never includes password or AWS keys */
 export interface DatabaseResource {
   id: string;
   name: string;
@@ -135,8 +203,13 @@ export interface DatabaseResource {
   username: string | null;
   sslMode: SslMode | string | null;
   region: string | null;
+  recoveryMode: RecoveryMode;
+  rdsSourceIdentifier: string | null;
+  recoveryUseFreetier: boolean;
+  recoverySandboxInstanceClass: string | null;
   description: string | null;
   hasCredentials: boolean;
+  hasAwsCredentials: boolean;
   hasValidationPlan: boolean;
   validationPlanName: string | null;
   validationPlanVersion: number | null;
@@ -154,6 +227,12 @@ export interface CreateDatabaseRequest {
   password?: string;
   sslMode?: SslMode;
   region?: string;
+  recoveryMode?: RecoveryMode;
+  rdsSourceIdentifier?: string;
+  recoveryUseFreetier?: boolean;
+  recoverySandboxInstanceClass?: string;
+  awsAccessKeyId?: string;
+  awsSecretAccessKey?: string;
   description?: string;
 }
 
@@ -167,6 +246,12 @@ export interface UpdateDatabaseRequest {
   password?: string;
   sslMode?: SslMode | null;
   region?: string | null;
+  recoveryMode?: RecoveryMode;
+  rdsSourceIdentifier?: string | null;
+  recoveryUseFreetier?: boolean;
+  recoverySandboxInstanceClass?: string | null;
+  awsAccessKeyId?: string;
+  awsSecretAccessKey?: string;
   description?: string | null;
 }
 

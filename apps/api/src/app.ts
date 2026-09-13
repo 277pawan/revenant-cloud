@@ -7,6 +7,7 @@ import { createDb } from "./db/index.js";
 import { rootHealthRoutes } from "./routes/health.js";
 import { registerV1Routes } from "./routes/v1/index.js";
 import { createAuthService } from "./services/auth.service.js";
+import { createAuthProvidersService } from "./services/auth-providers.service.js";
 import { createDatabasesService } from "./services/databases.service.js";
 import { createPlansService } from "./services/plans.service.js";
 import { createTeamService } from "./services/team.service.js";
@@ -26,6 +27,8 @@ import { createSchedulesHandlers } from "./controllers/schedules.controller.js";
 import { createEvidenceHandlers } from "./controllers/evidence.controller.js";
 import { createWebhooksHandlers } from "./controllers/webhooks.controller.js";
 import { createAuditHandlers } from "./controllers/audit.controller.js";
+import { createDashboardHandlers } from "./controllers/dashboard.controller.js";
+import { createDashboardService } from "./services/dashboard.service.js";
 import { SESSION_COOKIE } from "./lib/session.js";
 import type { AuthUser } from "@revenant/shared";
 import type { Database } from "./db/index.js";
@@ -76,7 +79,10 @@ export async function buildApp(env: Env) {
 
   await rootHealthRoutes(app);
   await registerV1Routes(app, {
-    authHandlers: createAuthHandlers(createAuthService(db, env)),
+    authHandlers: createAuthHandlers(
+      createAuthService(db, env),
+      createAuthProvidersService(db, env)
+    ),
     databasesHandlers: createDatabasesHandlers(
       createDatabasesService(db, env.MASTER_KEY)
     ),
@@ -96,6 +102,7 @@ export async function buildApp(env: Env) {
     evidenceHandlers: createEvidenceHandlers(evidenceService),
     webhooksHandlers: createWebhooksHandlers(webhooksService, auditService),
     auditHandlers: createAuditHandlers(auditService),
+    dashboardHandlers: createDashboardHandlers(createDashboardService(db)),
     env,
     db,
     jobsService,

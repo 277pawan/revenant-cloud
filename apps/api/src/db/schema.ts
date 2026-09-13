@@ -29,13 +29,59 @@ export const users = pgTable(
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
     email: varchar("email", { length: 255 }).notNull(),
-    passwordHash: text("password_hash").notNull(),
+    /** Null for OAuth-only accounts */
+    passwordHash: text("password_hash"),
     /** admin | executor | viewer — enforced by requireRoles middleware */
     role: varchar("role", { length: 50 }).notNull().default("admin"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [uniqueIndex("users_org_email_idx").on(table.organizationId, table.email)]
+);
+
+/** Linked OAuth / SSO identities (Google, GitHub, Microsoft) */
+export const userAuthProviders = pgTable(
+  "user_auth_providers",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    provider: varchar("provider", { length: 50 }).notNull(),
+    providerSubject: varchar("provider_subject", { length: 255 }).notNull(),
+    email: varchar("email", { length: 255 }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("user_auth_providers_provider_subject_idx").on(
+      table.provider,
+      table.providerSubject
+    ),
+  ]
+);
+
+/** Email invite tokens — replaces admin-set passwords in Phase 2 */
+export const organizationInvites = pgTable(
+  "organization_invites",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    email: varchar("email", { length: 255 }).notNull(),
+    role: varchar("role", { length: 50 }).notNull().default("executor"),
+    tokenHash: text("token_hash").notNull(),
+    invitedBy: uuid("invited_by").references(() => users.id, { onDelete: "set null" }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("organization_invites_org_email_idx").on(
+      table.organizationId,
+      table.email
+    ),
+  ]
 );
 
 /** Connection metadata — no secrets */
@@ -52,6 +98,16 @@ export const databases = pgTable("databases", {
   username: varchar("username", { length: 255 }),
   sslMode: varchar("ssl_mode", { length: 50 }).default("require"),
   region: varchar("region", { length: 50 }),
+  /** direct = connect to host; aws-rds = snapshot restore drill via CLI */
+  recoveryMode: varchar("recovery_mode", { length: 50 }).notNull().default("direct"),
+  /** RDS instance identifier for FindLatestSnapshot (aws-rds mode) */
+  rdsSourceIdentifier: varchar("rds_source_identifier", { length: 255 }),
+  recoveryUseFreetier: varchar("recovery_use_freetier", { length: 10 })
+    .notNull()
+    .default("false"),
+  recoverySandboxInstanceClass: varchar("recovery_sandbox_instance_class", {
+    length: 50,
+  }),
   description: text("description"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -87,6 +143,32 @@ export const databaseCredentials = pgTable(
  * One validation plan (revenant.yaml text) per database.
  * Version increments on each update.
  */
+/**
+ * Encrypted AWS access key pair for aws-rds recovery (1:1 per database).
+ * Plaintext JSON: { accessKeyId, secretAccessKey }
+ */
+export const databaseAwsCredentials = pgTable(
+  "database_aws_credentials",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    databaseId: uuid("database_id")
+      .notNull()
+      .references(() => databases.id, { onDelete: "cascade" }),
+    ciphertext: text("ciphertext").notNull(),
+    iv: text("iv").notNull(),
+    authTag: text("auth_tag").notNull(),
+    keyVersion: integer("key_version").notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("database_aws_credentials_database_id_idx").on(table.databaseId),
+  ]
+);
+
 export const validationPlans = pgTable(
   "validation_plans",
   {
@@ -283,6 +365,7 @@ export type Organization = typeof organizations.$inferSelect;
 export type User = typeof users.$inferSelect;
 export type DatabaseRow = typeof databases.$inferSelect;
 export type DatabaseCredential = typeof databaseCredentials.$inferSelect;
+export type DatabaseAwsCredential = typeof databaseAwsCredentials.$inferSelect;
 export type ValidationPlan = typeof validationPlans.$inferSelect;
 export type Job = typeof jobs.$inferSelect;
 export type JobResult = typeof jobResults.$inferSelect;

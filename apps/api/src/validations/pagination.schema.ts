@@ -6,7 +6,12 @@ export const paginationQuerySchema = z.object({
   pageSize: z.coerce.number().int().min(1).max(100).default(20),
 });
 
+export const listSearchQuerySchema = paginationQuerySchema.extend({
+  search: z.string().trim().max(255).optional(),
+});
+
 export type PaginationQueryInput = z.infer<typeof paginationQuerySchema>;
+export type ListSearchQueryInput = z.infer<typeof listSearchQuerySchema>;
 
 export function paginationMeta(total: number, page: number, pageSize: number) {
   return {

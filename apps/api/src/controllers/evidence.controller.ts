@@ -1,13 +1,13 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { evidenceIdParamSchema } from "../validations/evidence.schema.js";
-import { paginationQuerySchema } from "../validations/pagination.schema.js";
+import { listSearchQuerySchema } from "../validations/pagination.schema.js";
 import type { EvidenceService } from "../services/evidence.service.js";
 import { sendHandlerError } from "../lib/http.js";
 
 export function createEvidenceHandlers(evidenceService: EvidenceService) {
   return {
     list: async (request: FastifyRequest, reply: FastifyReply) => {
-      const query = paginationQuerySchema.safeParse(request.query);
+      const query = listSearchQuerySchema.safeParse(request.query);
       if (!query.success) {
         return reply
           .status(400)

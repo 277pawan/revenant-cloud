@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { access, constants } from "node:fs/promises";
+import type { AwsRecoveryConfig, RecoveryMode, RunnerAwsCredentials } from "@revenant/shared";
 
 export type ClaimedPayload = {
   job: { id: string; databaseName: string };
@@ -12,8 +13,11 @@ export type ClaimedPayload = {
     databaseName: string | null;
     username: string | null;
     sslMode?: string | null;
+    recoveryMode?: RecoveryMode;
   };
   password: string | null;
+  recovery: AwsRecoveryConfig | null;
+  awsCredentials: RunnerAwsCredentials | null;
   planYaml: string | null;
 };
 
@@ -39,6 +43,13 @@ type CliReport = {
   checks?: Array<{ name?: string; status?: string; message?: string }>;
 };
 
+const AWS_VERIFY_TIMEOUT_MS = Number(
+  process.env.REVENANT_AWS_VERIFY_TIMEOUT_MS ?? 2_100_000
+);
+const DIRECT_VERIFY_TIMEOUT_MS = Number(
+  process.env.REVENANT_VERIFY_TIMEOUT_MS ?? 120_000
+);
+
 async function fileExists(path: string): Promise<boolean> {
   try {
     await access(path, constants.F_OK);
@@ -63,7 +74,6 @@ export async function resolveRevenantCli(): Promise<string | null> {
     "revenant-cli",
     "revenant"
   );
-  // cwd may be apps/api or monorepo root
   const candidates = [
     fromEnv,
     sibling,
@@ -76,7 +86,6 @@ export async function resolveRevenantCli(): Promise<string | null> {
     if (await fileExists(c)) return c;
   }
 
-  // try PATH
   try {
     await new Promise<void>((ok, err) => {
       const child = spawn("revenant", ["--help"], { stdio: "ignore" });
@@ -89,6 +98,13 @@ export async function resolveRevenantCli(): Promise<string | null> {
   }
 }
 
+export function isAwsRecoveryMode(claimed: ClaimedPayload): boolean {
+  return (
+    claimed.database.recoveryMode === "aws-rds" ||
+    claimed.recovery?.engine === "aws-rds"
+  );
+}
+
 export function buildDatabaseUrl(claimed: ClaimedPayload): string | null {
   const { host, port, databaseName, username, sslMode } = claimed.database;
   if (!host || !databaseName || !username || !claimed.password) {
@@ -98,7 +114,6 @@ export function buildDatabaseUrl(claimed: ClaimedPayload): string | null {
   const pass = encodeURIComponent(claimed.password);
   const dbName = encodeURIComponent(databaseName);
   const p = port ?? 5432;
-  // Cloud stores sslMode (require | prefer | disable | verify-full…). Default require for remote hosts.
   const mode =
     !sslMode || sslMode === ""
       ? host === "localhost" || host === "127.0.0.1"
@@ -109,35 +124,66 @@ export function buildDatabaseUrl(claimed: ClaimedPayload): string | null {
   return `postgresql://${user}:${pass}@${host}:${p}/${dbName}${ssl}`;
 }
 
-/** Rewrite cloud plan YAML into CLI-shaped config (connection via DATABASE_URL). */
-export function buildCliConfigYaml(
-  planYaml: string | null,
-  planName: string
-): string {
+function extractChecksBlock(planYaml: string | null): string {
   const checksMatch = planYaml?.match(/checks:\s*\n[\s\S]*/i);
   let checksBlock = checksMatch?.[0]?.trimEnd() ?? "";
 
   if (!checksBlock) {
     checksBlock = "checks:\n  - type: connect";
   } else {
-    // Soft-normalize common UI mistakes toward CLI schema fields
-    checksBlock = checksBlock
-      .replace(/expect_tables:/g, "expect_tables:")
-      .replace(
-        /(^\s*- type:\s*schema\s*\n)(\s*)tables:/gm,
-        "$1$2expect_tables:"
-      );
+    checksBlock = checksBlock.replace(
+      /(^\s*- type:\s*schema\s*\n)(\s*)tables:/gm,
+      "$1$2expect_tables:"
+    );
   }
+  return checksBlock;
+}
 
+/** Build CLI config for direct Postgres connection. */
+export function buildDirectCliConfigYaml(
+  planYaml: string | null,
+  planName: string
+): string {
   return [
     `plan: ${JSON.stringify(planName)}`,
     "database:",
     "  engine: postgres",
     "  connection: ${DATABASE_URL}",
     "",
-    checksBlock,
+    extractChecksBlock(planYaml),
     "",
   ].join("\n");
+}
+
+/** Build CLI config for AWS snapshot restore drill. */
+export function buildAwsCliConfigYaml(
+  planYaml: string | null,
+  planName: string,
+  recovery: AwsRecoveryConfig
+): string {
+  const lines = [
+    `plan: ${JSON.stringify(planName)}`,
+    "database:",
+    "  engine: postgres",
+    "  connection: postgres://${SANDBOX_USER}:${SANDBOX_PASSWORD}@${SANDBOX_ENDPOINT}:5432/${SANDBOX_DBNAME}?sslmode=require",
+    "",
+    "recovery:",
+    "  engine: aws-rds",
+    `  source_identifier: ${JSON.stringify(recovery.sourceIdentifier)}`,
+    `  region: ${JSON.stringify(recovery.region)}`,
+  ];
+
+  if (recovery.useFreetier) {
+    lines.push("  use_freetier: true");
+  }
+  if (recovery.sandboxInstanceClass) {
+    lines.push(
+      `  sandbox_instance_class: ${JSON.stringify(recovery.sandboxInstanceClass)}`
+    );
+  }
+
+  lines.push("", extractChecksBlock(planYaml), "");
+  return lines.join("\n");
 }
 
 function runCommand(
@@ -195,52 +241,112 @@ function mapCliReport(report: CliReport): CheckResult[] {
   });
 }
 
+function buildCliEnv(
+  claimed: ClaimedPayload,
+  awsMode: boolean
+): { env: NodeJS.ProcessEnv; error?: string } {
+  if (awsMode) {
+    const { username, databaseName } = claimed.database;
+    const recovery = claimed.recovery;
+    const aws = claimed.awsCredentials;
+
+    if (!recovery?.sourceIdentifier || !recovery.region) {
+      return {
+        env: process.env,
+        error: "AWS recovery config incomplete — set RDS instance ID and region",
+      };
+    }
+    if (!aws?.accessKeyId || !aws.secretAccessKey) {
+      return {
+        env: process.env,
+        error: "AWS credentials missing — add access keys on the database",
+      };
+    }
+    if (!username || !claimed.password || !databaseName) {
+      return {
+        env: process.env,
+        error:
+          "RDS master username, password, and database name required for sandbox connection",
+      };
+    }
+
+    return {
+      env: {
+        ...process.env,
+        AWS_ACCESS_KEY_ID: aws.accessKeyId,
+        AWS_SECRET_ACCESS_KEY: aws.secretAccessKey,
+        AWS_REGION: recovery.region,
+        SANDBOX_USER: username,
+        SANDBOX_PASSWORD: claimed.password,
+        SANDBOX_DBNAME: databaseName,
+      },
+    };
+  }
+
+  const databaseUrl = buildDatabaseUrl(claimed);
+  if (!databaseUrl) {
+    return {
+      env: process.env,
+      error: "Missing host, database name, username, or password",
+    };
+  }
+
+  return {
+    env: {
+      ...process.env,
+      DATABASE_URL: databaseUrl,
+    },
+  };
+}
+
 async function runWithCli(
   claimed: ClaimedPayload,
   cliPath: string,
   executionMode: "stub" | "agent" | "ci"
 ): Promise<ExecutionOutcome> {
   const started = Date.now();
-  const databaseUrl = buildDatabaseUrl(claimed);
-  if (!databaseUrl) {
+  const awsMode = isAwsRecoveryMode(claimed);
+  const { env, error } = buildCliEnv(claimed, awsMode);
+
+  if (error) {
     return {
       status: "fail",
       executionMode,
       usedCli: false,
       rtoSeconds: 1,
-      errorMessage: "Missing host, database name, username, or password",
+      errorMessage: error,
       results: [
         {
           checkName: "connect",
           checkType: "connect",
           status: "fail",
-          message: "Cannot build DATABASE_URL — configure database credentials",
+          message: error,
           durationMs: 0,
         },
       ],
     };
   }
 
+  const planName = claimed.job.databaseName || "cloud-job";
+  const yaml = awsMode && claimed.recovery
+    ? buildAwsCliConfigYaml(claimed.planYaml, planName, claimed.recovery)
+    : buildDirectCliConfigYaml(claimed.planYaml, planName);
+
   const dir = await mkdtemp(join(tmpdir(), "revenant-job-"));
   try {
     const configPath = join(dir, "revenant.yaml");
     const reportPath = join(dir, "report.json");
-    const yaml = buildCliConfigYaml(
-      claimed.planYaml,
-      claimed.job.databaseName || "cloud-job"
-    );
     await writeFile(configPath, yaml, "utf8");
+
+    const timeoutMs = awsMode ? AWS_VERIFY_TIMEOUT_MS : DIRECT_VERIFY_TIMEOUT_MS;
 
     const { code, stdout, stderr } = await runCommand(
       cliPath,
       ["verify", "-c", configPath, "-o", reportPath, "--markdown", join(dir, "report.md")],
       {
         cwd: dir,
-        env: {
-          ...process.env,
-          DATABASE_URL: databaseUrl,
-        },
-        timeoutMs: Number(process.env.REVENANT_VERIFY_TIMEOUT_MS ?? 120_000),
+        env,
+        timeoutMs,
       }
     );
 
@@ -288,19 +394,31 @@ function runMetadataFallback(
   reason: string
 ): ExecutionOutcome {
   const started = Date.now();
-  const hasTarget = Boolean(claimed.database.host && claimed.password);
+  const awsMode = isAwsRecoveryMode(claimed);
+  const hasTarget = awsMode
+    ? Boolean(
+        claimed.recovery?.sourceIdentifier &&
+          claimed.awsCredentials &&
+          claimed.password &&
+          claimed.database.username
+      )
+    : Boolean(claimed.database.host && claimed.password);
   const hasPlan = Boolean(claimed.planYaml);
   const simulated = executionMode === "stub";
 
   const results: CheckResult[] = [
     {
-      checkName: "connect",
-      checkType: "connect",
+      checkName: awsMode ? "aws-recovery" : "connect",
+      checkType: awsMode ? "aws-rds" : "connect",
       status: hasTarget ? "pass" : "fail",
       message: `${simulated ? "[SIMULATED] " : ""}${
         hasTarget
-          ? `Target ${claimed.database.host}:${claimed.database.port ?? 5432} received (${reason})`
-          : "Missing host or password"
+          ? awsMode
+            ? `AWS restore drill configured for ${claimed.recovery?.sourceIdentifier} (${reason})`
+            : `Target ${claimed.database.host}:${claimed.database.port ?? 5432} received (${reason})`
+          : awsMode
+            ? "Missing AWS recovery config or credentials"
+            : "Missing host or password"
       }`,
       durationMs: 40,
     },
@@ -343,11 +461,7 @@ export async function executeClaimedJob(
     (executionMode === "stub" && process.env.REVENANT_STUB_SIMULATE === "true");
 
   if (forceSim) {
-    return runMetadataFallback(
-      claimed,
-      executionMode,
-      "forced simulation"
-    );
+    return runMetadataFallback(claimed, executionMode, "forced simulation");
   }
 
   const cli = await resolveRevenantCli();

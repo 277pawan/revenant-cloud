@@ -7,6 +7,7 @@ import type {
 } from "@revenant/shared";
 import type { Database } from "../db/index.js";
 import {
+  databaseAwsCredentials,
   databaseCredentials,
   databases,
   jobResults,
@@ -267,11 +268,54 @@ export function createJobsService(db: Database, masterKey: string) {
       );
     }
 
+    let awsCredentials: { accessKeyId: string; secretAccessKey: string } | null =
+      null;
+    if (database.recoveryMode === "aws-rds") {
+      const awsCred = await db
+        .select()
+        .from(databaseAwsCredentials)
+        .where(eq(databaseAwsCredentials.databaseId, database.id))
+        .limit(1);
+
+      if (awsCred[0]) {
+        const json = decryptSecret(
+          {
+            ciphertext: awsCred[0].ciphertext,
+            iv: awsCred[0].iv,
+            authTag: awsCred[0].authTag,
+          },
+          masterKey
+        );
+        const parsed = JSON.parse(json) as {
+          accessKeyId?: string;
+          secretAccessKey?: string;
+        };
+        if (parsed.accessKeyId && parsed.secretAccessKey) {
+          awsCredentials = {
+            accessKeyId: parsed.accessKeyId,
+            secretAccessKey: parsed.secretAccessKey,
+          };
+        }
+      }
+    }
+
     const plan = await db
       .select()
       .from(validationPlans)
       .where(eq(validationPlans.databaseId, database.id))
       .limit(1);
+
+    const recoveryMode = database.recoveryMode === "aws-rds" ? "aws-rds" : "direct";
+    const recovery =
+      recoveryMode === "aws-rds" && database.rdsSourceIdentifier && database.region
+        ? {
+            engine: "aws-rds" as const,
+            sourceIdentifier: database.rdsSourceIdentifier,
+            region: database.region,
+            useFreetier: database.recoveryUseFreetier === "true",
+            sandboxInstanceClass: database.recoverySandboxInstanceClass,
+          }
+        : null;
 
     return {
       job: toJob(updated, database.name),
@@ -284,8 +328,11 @@ export function createJobsService(db: Database, masterKey: string) {
         username: database.username,
         sslMode: database.sslMode,
         region: database.region,
+        recoveryMode,
       },
       password,
+      recovery,
+      awsCredentials,
       planYaml: plan[0]?.yamlText ?? null,
       planVersion: plan[0]?.version ?? null,
       executionMode,

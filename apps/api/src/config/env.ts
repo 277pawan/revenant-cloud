@@ -73,6 +73,15 @@ const envSchema = z.object({
     .enum(["true", "false"])
     .default("false")
     .transform((v) => v === "true"),
+  /** OAuth — optional until SSO goes live */
+  OAUTH_GOOGLE_CLIENT_ID: z.string().optional(),
+  OAUTH_GOOGLE_CLIENT_SECRET: z.string().optional(),
+  OAUTH_GITHUB_CLIENT_ID: z.string().optional(),
+  OAUTH_GITHUB_CLIENT_SECRET: z.string().optional(),
+  OAUTH_MICROSOFT_CLIENT_ID: z.string().optional(),
+  OAUTH_MICROSOFT_CLIENT_SECRET: z.string().optional(),
+  /** Public API base for OAuth redirect URIs (defaults to localhost API) */
+  OAUTH_REDIRECT_BASE_URL: z.string().default("http://localhost:8080"),
 });
 
 export type Env = z.infer<typeof envSchema>;

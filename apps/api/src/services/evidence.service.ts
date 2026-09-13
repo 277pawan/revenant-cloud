@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, ilike, or, sql } from "drizzle-orm";
 import type { EvidenceArtifactResource, JobDetailResource } from "@revenant/shared";
 import type { Database } from "../db/index.js";
 import { databases, evidenceArtifacts, jobs } from "../db/schema.js";
@@ -9,7 +9,7 @@ import { createAppError } from "../lib/errors.js";
 import {
   paginationMeta,
   paginationOffset,
-  type PaginationQueryInput,
+  type ListSearchQueryInput,
 } from "../validations/pagination.schema.js";
 
 function toResource(
@@ -68,9 +68,22 @@ export function createEvidenceService(db: Database, evidenceDir: string) {
       });
     },
 
-    async list(organizationId: string, pagination: PaginationQueryInput) {
-      const { page, pageSize } = pagination;
+    async list(organizationId: string, query: ListSearchQueryInput) {
+      const { page, pageSize, search } = query;
       const offset = paginationOffset(page, pageSize);
+
+      const conditions = [eq(evidenceArtifacts.organizationId, organizationId)];
+      if (search) {
+        const term = `%${search}%`;
+        conditions.push(
+          or(
+            ilike(databases.name, term),
+            ilike(evidenceArtifacts.jobId, term),
+            ilike(evidenceArtifacts.sha256, term)
+          )!
+        );
+      }
+      const whereClause = and(...conditions);
 
       const [rows, countRow] = await Promise.all([
         db
@@ -81,14 +94,16 @@ export function createEvidenceService(db: Database, evidenceDir: string) {
           .from(evidenceArtifacts)
           .innerJoin(jobs, eq(jobs.id, evidenceArtifacts.jobId))
           .innerJoin(databases, eq(databases.id, jobs.databaseId))
-          .where(eq(evidenceArtifacts.organizationId, organizationId))
+          .where(whereClause)
           .orderBy(desc(evidenceArtifacts.createdAt))
           .limit(pageSize)
           .offset(offset),
         db
           .select({ count: sql<number>`count(*)::int` })
           .from(evidenceArtifacts)
-          .where(eq(evidenceArtifacts.organizationId, organizationId)),
+          .innerJoin(jobs, eq(jobs.id, evidenceArtifacts.jobId))
+          .innerJoin(databases, eq(databases.id, jobs.databaseId))
+          .where(whereClause),
       ]);
 
       const total = countRow[0]?.count ?? 0;
