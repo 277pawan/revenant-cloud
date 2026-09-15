@@ -8,6 +8,11 @@ import { listSearchQuerySchema } from "../validations/pagination.schema.js";
 import type { PlansService } from "../services/plans.service.js";
 import type { YamlComposerService } from "../services/yaml-composer.service.js";
 import { sendHandlerError } from "../lib/http.js";
+import {
+  getValidationTemplate,
+  VALIDATION_PLAN_TEMPLATES,
+} from "../lib/validation-templates.js";
+import { createAppError } from "../lib/errors.js";
 
 export function createPlansHandlers(
   plansService: PlansService,
@@ -115,6 +120,30 @@ export function createPlansHandlers(
           reply,
           "Failed to compose validation YAML"
         );
+      }
+    },
+
+    listTemplates: async () => {
+      return {
+        templates: VALIDATION_PLAN_TEMPLATES.map(({ id, name, description, tags }) => ({
+          id,
+          name,
+          description,
+          tags,
+        })),
+      };
+    },
+
+    getTemplate: async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const templateId = (request.params as { templateId: string }).templateId;
+        const template = getValidationTemplate(templateId);
+        if (!template) {
+          throw createAppError(404, "Template not found", "NOT_FOUND");
+        }
+        return { template };
+      } catch (err) {
+        return sendHandlerError(err, request, reply, "Failed to load template");
       }
     },
 

@@ -78,6 +78,20 @@
       "when": 1789065200000,
       "tag": "0010_phase3_aws_recovery",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1789066000000,
+      "tag": "0011_auth_oauth_invites",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1789066800000,
+      "tag": "0012_password_reset",
+      "breakpoints": true
     }
   ]
 }

@@ -41,11 +41,12 @@ export function createTeamHandlers(teamService: TeamService) {
       }
 
       try {
-        const member = await teamService.invite(
+        const invite = await teamService.invite(
           request.user.organizationId,
+          request.user.id,
           body.data
         );
-        return reply.status(201).send({ member });
+        return reply.status(201).send({ invite });
       } catch (err) {
         return sendHandlerError(
           err,

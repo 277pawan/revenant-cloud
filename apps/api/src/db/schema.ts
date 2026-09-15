@@ -39,7 +39,7 @@ export const users = pgTable(
   (table) => [uniqueIndex("users_org_email_idx").on(table.organizationId, table.email)]
 );
 
-/** Linked OAuth / SSO identities (Google, GitHub, Microsoft) */
+/** Linked OAuth / SSO identities (Google, GitHub) */
 export const userAuthProviders = pgTable(
   "user_auth_providers",
   {
@@ -360,6 +360,34 @@ export const jobResults = pgTable("job_results", {
   durationMs: integer("duration_ms"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+export const passwordResetTokens = pgTable("password_reset_tokens", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  tokenHash: text("token_hash").notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  usedAt: timestamp("used_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const weeklyDigestLog = pgTable(
+  "weekly_digest_log",
+  {
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    weekKey: varchar("week_key", { length: 12 }).notNull(),
+    sentAt: timestamp("sent_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("weekly_digest_log_org_week_idx").on(
+      table.organizationId,
+      table.weekKey
+    ),
+  ]
+);
 
 export type Organization = typeof organizations.$inferSelect;
 export type User = typeof users.$inferSelect;

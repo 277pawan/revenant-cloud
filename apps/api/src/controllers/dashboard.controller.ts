@@ -14,6 +14,17 @@ export function createDashboardHandlers(dashboardService: DashboardService) {
         return sendHandlerError(err, request, reply, "Failed to load dashboard");
       }
     },
+
+    rtoTrends: async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const trends = await dashboardService.getRtoTrends(
+          request.user.organizationId
+        );
+        return { trends };
+      } catch (err) {
+        return sendHandlerError(err, request, reply, "Failed to load RTO trends");
+      }
+    },
   };
 }
 

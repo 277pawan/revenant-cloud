@@ -81,7 +81,7 @@ export async function buildApp(env: Env) {
   const jobsService = createJobsService(db, env.MASTER_KEY);
   const auditService = createAuditService(db);
   const evidenceService = createEvidenceService(db, env.EVIDENCE_DIR);
-  const webhooksService = createWebhooksService(db, env.MASTER_KEY);
+  const webhooksService = createWebhooksService(db, env.MASTER_KEY, env);
 
   await rootHealthRoutes(app);
   const authProvidersService = createAuthProvidersService(db, env);
@@ -98,7 +98,7 @@ export async function buildApp(env: Env) {
       createPlansService(db),
       createYamlComposerService(env)
     ),
-    teamHandlers: createTeamHandlers(createTeamService(db)),
+    teamHandlers: createTeamHandlers(createTeamService(db, env)),
     jobsHandlers: createJobsHandlers(
       jobsService,
       evidenceService,

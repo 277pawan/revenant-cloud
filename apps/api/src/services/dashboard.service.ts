@@ -3,6 +3,8 @@ import type {
   DashboardFleetRow,
   DashboardOnboardingStep,
   DashboardOverview,
+  DashboardRtoTrend,
+  DashboardRtoTrendPoint,
   FleetHealthStatus,
   OrganizationPlan,
 } from "@revenant/shared";
@@ -263,7 +265,7 @@ export function createDashboardService(db: Database) {
         },
         {
           id: "plan",
-          label: "Save a validation plan",
+          label: "Save a validation plan (or import AWS free-tier template)",
           done: hasPlan,
           href: "/settings/validation-plans",
         },
@@ -309,6 +311,57 @@ export function createDashboardService(db: Database) {
         onboarding,
         fleet,
       };
+    },
+
+    async getRtoTrends(organizationId: string): Promise<DashboardRtoTrend> {
+      const now = new Date();
+      const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+
+      const rows = await db
+        .select({
+          day: sql<string>`to_char(date_trunc('day', ${jobs.finishedAt} at time zone 'UTC'), 'YYYY-MM-DD')`,
+          avgRto: sql<number | null>`round(avg(${jobs.rtoSeconds}))::int`,
+          passCount: sql<number>`count(*)::int`,
+        })
+        .from(jobs)
+        .where(
+          and(
+            eq(jobs.organizationId, organizationId),
+            eq(jobs.status, "pass"),
+            gte(jobs.finishedAt, thirtyDaysAgo),
+            sql`${jobs.rtoSeconds} is not null`
+          )
+        )
+        .groupBy(sql`date_trunc('day', ${jobs.finishedAt} at time zone 'UTC')`)
+        .orderBy(sql`date_trunc('day', ${jobs.finishedAt} at time zone 'UTC')`);
+
+      const byDay = new Map(
+        rows.map((r) => [
+          r.day,
+          {
+            date: r.day,
+            avgRtoSeconds:
+              r.avgRto != null ? Number(r.avgRto) : null,
+            passCount: Number(r.passCount ?? 0),
+          } satisfies DashboardRtoTrendPoint,
+        ])
+      );
+
+      const days: DashboardRtoTrendPoint[] = [];
+      for (let i = 29; i >= 0; i--) {
+        const d = new Date(now);
+        d.setUTCDate(d.getUTCDate() - i);
+        const key = d.toISOString().slice(0, 10);
+        days.push(
+          byDay.get(key) ?? {
+            date: key,
+            avgRtoSeconds: null,
+            passCount: 0,
+          }
+        );
+      }
+
+      return { days };
     },
   };
 }

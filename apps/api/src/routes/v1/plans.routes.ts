@@ -28,6 +28,18 @@ export async function plansRoutes(app: FastifyInstance, handlers: PlansHandlers)
   );
 
   app.get(
+    "/validation-plans/templates",
+    { preHandler: requirePermission("plans:read") },
+    handlers.listTemplates
+  );
+
+  app.get(
+    "/validation-plans/templates/:templateId",
+    { preHandler: requirePermission("plans:read") },
+    handlers.getTemplate
+  );
+
+  app.get(
     "/validation-plans/composer",
     { preHandler: requirePermission("plans:read") },
     handlers.composerStatus

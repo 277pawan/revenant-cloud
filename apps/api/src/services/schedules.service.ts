@@ -4,6 +4,7 @@ import type { Database } from "../db/index.js";
 import { databases, schedules, validationPlans } from "../db/schema.js";
 import { computeNextRunAt } from "../lib/cron.js";
 import { createAppError } from "../lib/errors.js";
+import { assertPlanLimit } from "../lib/plan-limits.js";
 import {
   paginationMeta,
   paginationOffset,
@@ -67,6 +68,8 @@ export function createSchedulesService(db: Database) {
         enabled: boolean;
       }
     ) {
+      await assertPlanLimit(db, organizationId, "schedules");
+
       const plan = await db
         .select({ id: validationPlans.id })
         .from(validationPlans)

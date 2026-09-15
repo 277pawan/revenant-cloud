@@ -3,6 +3,7 @@ import { buildApp } from "./app.js";
 import { startRunnerPoll } from "./runner/poll-loop.js";
 import { resolveRevenantCli } from "./runner/execute-job.js";
 import { startSchedulePoll } from "./scheduler/poll-schedules.js";
+import { startWeeklyDigestPoll } from "./scheduler/poll-weekly-digest.js";
 import { createJobsService } from "./services/jobs.service.js";
 import { createDb } from "./db/index.js";
 
@@ -43,6 +44,8 @@ try {
       label: "embedded",
     });
     console.log("[embedded-scheduler] enabled — due schedules enqueue jobs");
+    startWeeklyDigestPoll({ db, env, label: "embedded" });
+    console.log("[weekly-digest] enabled — Mondays 09:00 UTC");
   } else {
     console.log(
       "[embedded-scheduler] off — set EMBEDDED_SCHEDULER=true to poll schedules"

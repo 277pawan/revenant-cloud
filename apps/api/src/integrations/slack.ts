@@ -1,33 +1,25 @@
 import type { DeliverContext, DeliveryResult } from "./types.js";
+import { buildSlackJobBlocks } from "../lib/notification-templates.js";
 
-function eventLabel(event: string): string {
-  if (event === "job.pass") return "✅ Validation passed";
-  if (event === "job.fail") return "❌ Validation failed";
-  if (event === "job.error") return "⚠️ Validation error";
-  return event;
-}
-
-export async function deliverSlack(ctx: DeliverContext): Promise<DeliveryResult> {
+export async function deliverSlack(
+  ctx: DeliverContext
+): Promise<DeliveryResult> {
   const webhookUrl = String(ctx.config.webhookUrl ?? "");
   if (!webhookUrl.includes("hooks.slack.com")) {
     return { ok: false, error: "Invalid Slack webhook URL" };
   }
 
-  const text = [
-    `*${eventLabel(ctx.event)}*`,
-    `Workflow: *${ctx.job.databaseName}*`,
-    `Status: \`${ctx.job.status}\``,
-    ctx.job.rtoSeconds != null ? `RTO: ${ctx.job.rtoSeconds}s` : null,
-    `Job: \`${ctx.job.id}\``,
-  ]
-    .filter(Boolean)
-    .join("\n");
+  const payload = buildSlackJobBlocks({
+    event: ctx.event,
+    job: ctx.job,
+    appUrl: ctx.appUrl,
+  });
 
   try {
     const res = await fetch(webhookUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify(payload),
       signal: AbortSignal.timeout(10_000),
     });
     return { ok: res.ok, httpStatus: res.status };

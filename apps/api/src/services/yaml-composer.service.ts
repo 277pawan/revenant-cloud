@@ -1,5 +1,7 @@
 import type { Env } from "../config/env.js";
+import { composeYamlFromSchema } from "../lib/composer-check-builder.js";
 import { createAppError } from "../lib/errors.js";
+import { analyzeSchema } from "../lib/schema-analyzer.js";
 import { YAML_COMPOSER_SYSTEM_PROMPT } from "../lib/yaml-composer-prompt.js";
 import {
   extractYamlDocument,
@@ -14,21 +16,43 @@ export interface YamlComposerInput {
   layers?: string[];
 }
 
+const OPENROUTER_DEFAULT_MODEL = "mistralai/mistral-small-3.2-24b-instruct";
+const MISTRAL_DEFAULT_MODEL = "mistral-small-latest";
+
+const DEPRECATED_OPENROUTER_MODELS: Record<string, string> = {
+  "mistralai/mistral-small-latest": OPENROUTER_DEFAULT_MODEL,
+};
+
 function resolveProvider(env: Env): {
   url: string;
   model: string;
   isOpenRouter: boolean;
 } {
   const key = env.MISTRAL_API_KEY ?? "";
-  const isOpenRouter = key.startsWith("sk-or-v1-");
+  const urlHint = env.MISTRAL_API_URL ?? "";
+  const isOpenRouter =
+    key.startsWith("sk-or-v1-") || urlHint.includes("openrouter.ai");
+
   let url =
-    env.MISTRAL_API_URL ?? "https://api.mistral.ai/v1/chat/completions";
-  if (isOpenRouter && url.includes("api.mistral.ai")) {
+    urlHint || "https://api.mistral.ai/v1/chat/completions";
+  if (isOpenRouter && !url.includes("openrouter.ai")) {
     url = "https://openrouter.ai/api/v1/chat/completions";
   }
-  const model =
+
+  let model =
     env.MISTRAL_MODEL ??
-    (isOpenRouter ? "mistralai/mistral-small-latest" : "mistral-small-latest");
+    (isOpenRouter ? OPENROUTER_DEFAULT_MODEL : MISTRAL_DEFAULT_MODEL);
+
+  if (isOpenRouter) {
+    model = DEPRECATED_OPENROUTER_MODELS[model] ?? model;
+    if (!model.includes("/")) {
+      model =
+        model === MISTRAL_DEFAULT_MODEL
+          ? OPENROUTER_DEFAULT_MODEL
+          : `mistralai/${model}`;
+    }
+  }
+
   return { url, model, isOpenRouter };
 }
 
@@ -36,13 +60,10 @@ export function createYamlComposerService(env: Env) {
   return {
     status() {
       const configured = Boolean(env.MISTRAL_API_KEY);
-      const { isOpenRouter, model } = configured
-        ? resolveProvider(env)
-        : { isOpenRouter: false, model: "" };
       return {
         enabled: configured,
-        provider: configured ? (isOpenRouter ? "openrouter" : "mistral") : null,
-        model: configured ? model : null,
+        provider: null,
+        model: null,
       };
     },
 
@@ -50,7 +71,7 @@ export function createYamlComposerService(env: Env) {
       if (!env.MISTRAL_API_KEY) {
         throw createAppError(
           503,
-          "Proof Composer is not configured (MISTRAL_API_KEY)",
+          "Proof Composer is temporarily unavailable. Please try again later or write your plan manually.",
           "AI_NOT_CONFIGURED"
         );
       }
@@ -64,6 +85,30 @@ export function createYamlComposerService(env: Env) {
         );
       }
 
+      const planName = input.planName?.trim() || "restore-proof";
+      const analysis = analyzeSchema(schema);
+
+      if (analysis && analysis.tables.length > 0) {
+        const composed = composeYamlFromSchema(analysis, {
+          planName,
+          layers: input.layers,
+          intent: input.intent,
+        });
+        const validated = validateRevenantYaml(composed.yamlText);
+        const byType: Record<string, number> = {};
+        for (const c of validated.checks) {
+          byType[c.type] = (byType[c.type] ?? 0) + 1;
+        }
+        return {
+          yamlText: validated.yamlText,
+          checks: validated.checks,
+          summary: {
+            total: validated.checks.length,
+            byType,
+          },
+        };
+      }
+
       const { url, model, isOpenRouter } = resolveProvider(env);
       const layers =
         input.layers && input.layers.length > 0
@@ -71,10 +116,10 @@ export function createYamlComposerService(env: Env) {
           : "default restore-proof layers";
 
       const userContent = [
-        `Plan name: ${input.planName?.trim() || "restore-proof"}`,
+        `Plan name: ${planName}`,
         `Proof layers to include: ${layers}`,
         input.intent?.trim()
-          ? `User conditions after restore:\n${input.intent.trim()}`
+          ? `MANDATORY user rules (must appear in checks):\n${input.intent.trim()}`
           : "User conditions: none — infer a solid default proof plan from the schema.",
         "Schema / models:",
         schema,
@@ -105,9 +150,14 @@ export function createYamlComposerService(env: Env) {
 
       if (!res.ok) {
         const detail = await res.text().catch(() => "");
+        console.error(
+          "[yaml-composer] upstream error",
+          res.status,
+          detail.slice(0, 500)
+        );
         throw createAppError(
           502,
-          `Model request failed (${res.status})${detail ? `: ${detail.slice(0, 180)}` : ""}`,
+          "Revenant AI is temporarily unavailable. Please try again in a few minutes.",
           "AI_UPSTREAM"
         );
       }
@@ -117,7 +167,12 @@ export function createYamlComposerService(env: Env) {
       };
       const content = payload.choices?.[0]?.message?.content;
       if (!content?.trim()) {
-        throw createAppError(502, "Model returned an empty plan", "AI_UPSTREAM");
+        console.error("[yaml-composer] upstream returned empty content");
+        throw createAppError(
+          502,
+          "Revenant AI is temporarily unavailable. Please try again in a few minutes.",
+          "AI_UPSTREAM"
+        );
       }
 
       try {
@@ -136,11 +191,13 @@ export function createYamlComposerService(env: Env) {
           },
         };
       } catch (err) {
+        console.error(
+          "[yaml-composer] generated YAML failed validation",
+          err instanceof Error ? err.message : err
+        );
         throw createAppError(
           422,
-          err instanceof Error
-            ? `Generated YAML failed Revenant rules: ${err.message}`
-            : "Generated YAML failed Revenant rules",
+          "We couldn't build a valid plan from your schema. Try a smaller schema or simpler rules.",
           "AI_INVALID_YAML"
         );
       }

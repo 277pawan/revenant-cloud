@@ -31,7 +31,7 @@ Do **not** build a public share URL for evidence. People download a PDF and shar
 | `GET /api/v1/auth/invite/:token` | Preview org/role for invite link banner |
 | `GET /api/v1/public/catalog` | Unauthenticated: plans, SSO button status, app login URL (for the future website) |
 | `GET /api/v1/auth/oauth/:provider/start` | HMAC-signed `state` + `returnTo` allowlist (app or marketing origin) |
-| `GET /api/v1/auth/oauth/:provider/callback` | Validates `state`; token exchange still 501 until website SSO |
+| `GET /api/v1/auth/oauth/:provider/callback` | Token exchange, user linking, session cookie, redirect to app |
 
 ## Database (migration `0011`)
 
@@ -45,9 +45,8 @@ Do **not** build a public share URL for evidence. People download a PDF and shar
 
 1. **Google** — default for business email; fastest “Continue with Google”
 2. **GitHub** — perfect for DevOps/SRE buyers of Revenant
-3. **Microsoft** — enterprise / India IT teams on M365
 
-**Do not** add Apple/Facebook — wrong audience.
+**Do not** add Apple/Facebook/Microsoft — wrong audience or deferred.
 
 Single sign-on UX: one row of provider buttons **above** email/password (password remains fallback for invited users until invite links ship).
 

@@ -16,12 +16,13 @@ export async function deliverToProvider(
   endpoint: EndpointRow,
   job: JobDetailResource,
   event: string,
-  masterKey: string
+  masterKey: string,
+  options?: { appUrl?: string }
 ): Promise<DeliveryResult> {
   const provider = endpoint.provider as WebhookProvider;
   const config = parseConfig(endpoint.config);
 
-  const ctx = { endpoint, job, event, provider, config };
+  const ctx = { endpoint, job, event, provider, config, appUrl: options?.appUrl };
 
   switch (provider) {
     case "slack":

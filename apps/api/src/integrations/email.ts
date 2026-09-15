@@ -1,12 +1,11 @@
 import nodemailer from "nodemailer";
 import type { DeliverContext, DeliveryResult } from "./types.js";
 import { decryptSecret } from "../lib/crypto.js";
-
-function eventSubject(event: string, workflow: string): string {
-  const label =
-    event === "job.pass" ? "PASSED" : event === "job.fail" ? "FAILED" : "ERROR";
-  return `[Revenant] ${workflow} — ${label}`;
-}
+import {
+  jobAlertHtml,
+  jobAlertPlainText,
+  jobAlertSubject,
+} from "../lib/notification-templates.js";
 
 export async function deliverEmail(
   ctx: DeliverContext,
@@ -58,24 +57,21 @@ export async function deliverEmail(
     auth: { user: smtpUser, pass: smtpPassword },
   });
 
-  const text = [
-    `Event: ${ctx.event}`,
-    `Workflow: ${ctx.job.databaseName}`,
-    `Status: ${ctx.job.status}`,
-    `Job ID: ${ctx.job.id}`,
-    ctx.job.finishedAt ? `Finished: ${ctx.job.finishedAt}` : null,
-    ctx.job.rtoSeconds != null ? `RTO: ${ctx.job.rtoSeconds}s` : null,
-    ctx.job.errorMessage ? `Error: ${ctx.job.errorMessage}` : null,
-  ]
-    .filter(Boolean)
-    .join("\n");
+  const subject = jobAlertSubject(ctx.event, ctx.job.databaseName);
+  const text = jobAlertPlainText({ event: ctx.event, job: ctx.job });
+  const html = jobAlertHtml({
+    event: ctx.event,
+    job: ctx.job,
+    appUrl: ctx.appUrl,
+  });
 
   try {
     const info = await transporter.sendMail({
       from: smtpFrom,
       to: recipients.join(", "),
-      subject: eventSubject(ctx.event, ctx.job.databaseName),
+      subject,
       text,
+      html,
     });
     return { ok: true, httpStatus: 200, error: info.messageId };
   } catch (err) {

@@ -11,6 +11,8 @@ import { webhookDeliveries, webhookEndpoints } from "../db/schema.js";
 import { deliverToProvider, INTEGRATION_PROVIDERS } from "../integrations/deliver.js";
 import { encryptSecret } from "../lib/crypto.js";
 import { createAppError } from "../lib/errors.js";
+import type { Env } from "../config/env.js";
+import { assertPlanLimit } from "../lib/plan-limits.js";
 import type { CreateWebhookInput } from "../validations/webhooks.schema.js";
 import {
   paginationMeta,
@@ -97,7 +99,7 @@ function emailConfigForStorage(
   };
 }
 
-export function createWebhooksService(db: Database, masterKey: string) {
+export function createWebhooksService(db: Database, masterKey: string, env: Env) {
   return {
     listProviders() {
       return { providers: INTEGRATION_PROVIDERS };
@@ -129,6 +131,7 @@ export function createWebhooksService(db: Database, masterKey: string) {
     },
 
     async create(organizationId: string, input: CreateWebhookInput) {
+      await assertPlanLimit(db, organizationId, "integrations");
       const httpSecret =
         input.provider === "http" ? randomBytes(32).toString("hex") : "";
 
@@ -284,7 +287,9 @@ export function createWebhooksService(db: Database, masterKey: string) {
 
         for (let i = 0; i < 3 && !ok; i++) {
           attempts++;
-          const result = await deliverToProvider(endpoint, job, event, masterKey);
+          const result = await deliverToProvider(endpoint, job, event, masterKey, {
+            appUrl: env.PUBLIC_APP_URL,
+          });
           ok = result.ok;
           httpStatus = result.httpStatus;
           errorMessage = result.error;

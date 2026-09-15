@@ -13,7 +13,9 @@ OUTPUT RULES:
       connection: \${DATABASE_URL}
 - Do NOT include a recovery: block (the control plane injects AWS restore settings).
 - Do NOT put passwords, hosts, or real connection strings in the file.
-- Large schemas: pick at most 20 business-critical tables. Skip migrations, sessions, jobs, cache, audit noise, prisma/drizzle meta tables.
+- Large schemas: pick at most 20 tables that actually appear in the schema. Never invent table names (no accounts/orders/customers unless they exist).
+- If the user asks for an "account" table and the schema has users (not accounts), use users.
+- If they ask for created_at / updated_at, emit freshness checks on those columns for users/organizations (only if the columns exist).
 - Aim for 8–22 checks. Prefer fewer precise checks over dumping every table.
 - YAML indentation: 2 spaces. checks is a list of maps.
 

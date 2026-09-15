@@ -129,6 +129,30 @@ export interface DashboardOnboardingStep {
   href: string;
 }
 
+export interface DashboardRtoTrendPoint {
+  date: string;
+  avgRtoSeconds: number | null;
+  passCount: number;
+}
+
+export interface DashboardRtoTrend {
+  days: DashboardRtoTrendPoint[];
+}
+
+export interface ValidationPlanTemplateResource {
+  id: string;
+  name: string;
+  description: string;
+  tags: string[];
+}
+
+export interface TeamInviteResource {
+  inviteUrl: string;
+  email: string;
+  role: UserRole;
+  expiresAt: string;
+}
+
 export interface DashboardOverview {
   organizationPlan: OrganizationPlan;
   summary: {

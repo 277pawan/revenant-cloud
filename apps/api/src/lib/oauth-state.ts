@@ -4,6 +4,7 @@ export interface OAuthStatePayload {
   returnTo: string;
   issuedAt: number;
   nonce: string;
+  inviteToken?: string;
 }
 
 function signPart(secret: string, b64: string): string {
@@ -36,7 +37,8 @@ export function verifyOAuthState(
   if (
     typeof payload.returnTo !== "string" ||
     typeof payload.issuedAt !== "number" ||
-    typeof payload.nonce !== "string"
+    typeof payload.nonce !== "string" ||
+    (payload.inviteToken !== undefined && typeof payload.inviteToken !== "string")
   ) {
     throw new Error("Invalid OAuth state payload");
   }

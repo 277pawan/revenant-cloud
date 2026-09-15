@@ -1,4 +1,4 @@
-export type OAuthProviderId = "google" | "github" | "microsoft";
+export type OAuthProviderId = "google" | "github";
 
 export type AuthProviderStatus = "live" | "coming_soon" | "disabled";
 

@@ -2,7 +2,6 @@ import { z } from "zod";
 
 export const inviteTeamMemberSchema = z.object({
   email: z.string().email(),
-  password: z.string().min(8).max(128),
   role: z.enum(["admin", "executor", "viewer"]),
 });
 
