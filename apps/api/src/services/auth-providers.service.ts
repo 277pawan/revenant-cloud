@@ -38,6 +38,19 @@ const PROVIDER_META: Record<
         state,
       }).toString()}`,
   },
+  microsoft: {
+    label: "Microsoft",
+    authorizeUrl: ({ clientId, redirectUri, state }) =>
+      `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?${new URLSearchParams({
+        client_id: clientId,
+        redirect_uri: redirectUri,
+        response_type: "code",
+        response_mode: "query",
+        scope: "openid profile email User.Read",
+        state,
+        prompt: "select_account",
+      }).toString()}`,
+  },
 };
 
 function isProviderConfigured(env: Env, id: OAuthProviderId): boolean {
@@ -46,6 +59,8 @@ function isProviderConfigured(env: Env, id: OAuthProviderId): boolean {
       return !!(env.OAUTH_GOOGLE_CLIENT_ID && env.OAUTH_GOOGLE_CLIENT_SECRET);
     case "github":
       return !!(env.OAUTH_GITHUB_CLIENT_ID && env.OAUTH_GITHUB_CLIENT_SECRET);
+    case "microsoft":
+      return !!(env.OAUTH_MICROSOFT_CLIENT_ID && env.OAUTH_MICROSOFT_CLIENT_SECRET);
     default:
       return false;
   }
@@ -57,6 +72,8 @@ function clientIdFor(env: Env, id: OAuthProviderId): string | undefined {
       return env.OAUTH_GOOGLE_CLIENT_ID;
     case "github":
       return env.OAUTH_GITHUB_CLIENT_ID;
+    case "microsoft":
+      return env.OAUTH_MICROSOFT_CLIENT_ID;
     default:
       return undefined;
   }
@@ -73,7 +90,7 @@ export function generateInviteToken(): string {
 export function createAuthProvidersService(db: Database, env: Env) {
   return {
     listProviders(): AuthProvidersResponse {
-      const ids: OAuthProviderId[] = ["google", "github"];
+      const ids: OAuthProviderId[] = ["google", "github", "microsoft"];
 
       const providers: AuthProviderInfo[] = ids.map((id) => {
         const configured = isProviderConfigured(env, id);

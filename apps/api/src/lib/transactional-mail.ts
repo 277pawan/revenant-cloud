@@ -7,7 +7,13 @@ export function isTransactionalMailConfigured(env: Env): boolean {
 
 export async function sendTransactionalMail(
   env: Env,
-  options: { to: string | string[]; subject: string; text: string; html: string }
+  options: {
+    to: string | string[];
+    subject: string;
+    text: string;
+    html: string;
+    replyTo?: string;
+  }
 ): Promise<void> {
   if (!isTransactionalMailConfigured(env)) {
     console.warn("[mail] SMTP not configured — skipping:", options.subject);
@@ -24,6 +30,7 @@ export async function sendTransactionalMail(
   await transporter.sendMail({
     from: env.SMTP_FROM ?? env.SMTP_USER,
     to: Array.isArray(options.to) ? options.to.join(", ") : options.to,
+    replyTo: options.replyTo,
     subject: options.subject,
     text: options.text,
     html: options.html,

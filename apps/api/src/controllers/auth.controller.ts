@@ -21,7 +21,7 @@ import { isAppError } from "../lib/errors.js";
 import { sanitizeOAuthReturnTo, signOAuthState, verifyOAuthState } from "../lib/oauth-state.js";
 import type { Env } from "../config/env.js";
 
-const OAUTH_IDS = new Set<string>(["google", "github"]);
+const OAUTH_IDS = new Set<string>(["google", "github", "microsoft"]);
 
 function appRedirectUrl(env: Env, returnTo: string): string {
   if (returnTo.startsWith("http://") || returnTo.startsWith("https://")) {
@@ -31,8 +31,51 @@ function appRedirectUrl(env: Env, returnTo: string): string {
   return `${base}${returnTo.startsWith("/") ? returnTo : `/${returnTo}`}`;
 }
 
-function oauthLoginErrorUrl(env: Env, message: string): string {
-  const base = env.PUBLIC_APP_URL.replace(/\/$/, "");
+function oauthCompleteUrl(
+  env: Env,
+  message: string | null,
+  opts?: { popup?: boolean; returnTo?: string }
+): string {
+  let base = env.PUBLIC_APP_URL.replace(/\/$/, "");
+  if (opts?.returnTo?.startsWith("http://") || opts?.returnTo?.startsWith("https://")) {
+    try {
+      base = new URL(opts.returnTo).origin;
+    } catch {
+      /* keep app url */
+    }
+  }
+  const url = new URL(`${base}/auth/oauth/complete`);
+  if (message) url.searchParams.set("oauth_error", message);
+  if (opts?.popup) url.searchParams.set("popup", "1");
+  return url.toString();
+}
+
+function oauthCompleteErrorUrl(
+  env: Env,
+  message: string,
+  popup?: boolean,
+  returnTo?: string
+): string {
+  return oauthCompleteUrl(env, message, { popup, returnTo });
+}
+
+function oauthLoginErrorUrl(
+  env: Env,
+  message: string,
+  popup?: boolean,
+  returnTo?: string
+): string {
+  if (popup) {
+    return oauthCompleteErrorUrl(env, message, true, returnTo);
+  }
+  let base = env.PUBLIC_APP_URL.replace(/\/$/, "");
+  if (returnTo?.startsWith("http://") || returnTo?.startsWith("https://")) {
+    try {
+      base = new URL(returnTo).origin;
+    } catch {
+      /* keep */
+    }
+  }
   return `${base}/login?oauth_error=${encodeURIComponent(message)}`;
 }
 
@@ -189,11 +232,13 @@ export function createAuthHandlers(
           allowed
         );
         const inviteToken = (request.query as { invite?: string }).invite?.trim();
+        const popup = (request.query as { popup?: string }).popup === "1";
         const state = signOAuthState(env.JWT_SECRET, {
           returnTo,
           issuedAt: Date.now(),
           nonce: randomBytes(8).toString("hex"),
           ...(inviteToken ? { inviteToken } : {}),
+          ...(popup ? { popup: true } : {}),
         });
 
         const url = authProvidersService.buildOAuthStartUrl(
@@ -217,21 +262,29 @@ export function createAuthHandlers(
 
       const q = request.query as { state?: string; code?: string; error?: string };
 
-      if (q.error) {
-        return reply.redirect(oauthLoginErrorUrl(env, "Sign-in was cancelled."));
+      let statePayload: ReturnType<typeof verifyOAuthState> | undefined;
+      if (q.state) {
+        try {
+          statePayload = verifyOAuthState(env.JWT_SECRET, q.state);
+        } catch {
+          statePayload = undefined;
+        }
       }
-      if (!q.code || !q.state) {
+      const popup = statePayload?.popup === true;
+
+      if (q.error) {
         return reply.redirect(
-          oauthLoginErrorUrl(env, "Sign-in failed. Please try again.")
+          oauthLoginErrorUrl(env, "Sign-in was cancelled.", popup, statePayload?.returnTo)
         );
       }
-
-      let statePayload;
-      try {
-        statePayload = verifyOAuthState(env.JWT_SECRET, q.state);
-      } catch {
+      if (!q.code || !q.state || !statePayload) {
         return reply.redirect(
-          oauthLoginErrorUrl(env, "Sign-in session expired. Please try again.")
+          oauthLoginErrorUrl(
+            env,
+            "Sign-in failed. Please try again.",
+            popup,
+            statePayload?.returnTo
+          )
         );
       }
 
@@ -245,11 +298,23 @@ export function createAuthHandlers(
           profile,
           statePayload.inviteToken
         );
-        await authService.issueSession(reply, user);
-        return reply.redirect(appRedirectUrl(env, statePayload.returnTo));
+        const session = await authService.issueSession(reply, user);
+        const target = new URL(appRedirectUrl(env, statePayload.returnTo));
+        target.hash = `token=${encodeURIComponent(session.token)}`;
+        if (popup) {
+          target.searchParams.set("popup", "1");
+        }
+        return reply.redirect(target.toString());
       } catch (err) {
         request.log.error(err);
-        return reply.redirect(oauthLoginErrorUrl(env, oauthUserMessage(err)));
+        return reply.redirect(
+          oauthLoginErrorUrl(
+            env,
+            oauthUserMessage(err),
+            popup,
+            statePayload.returnTo
+          )
+        );
       }
     },
 

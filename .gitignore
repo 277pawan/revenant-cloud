@@ -3,6 +3,7 @@ dist/
 build/
 .env
 .env.local
+.env.production
 agent.yaml
 *.log
 .DS_Store

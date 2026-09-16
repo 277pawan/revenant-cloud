@@ -27,6 +27,8 @@ export async function exchangeOAuthCode(
       return exchangeGoogle(env, code);
     case "github":
       return exchangeGitHub(env, code);
+    case "microsoft":
+      return exchangeMicrosoft(env, code);
     default:
       throw createAppError(400, "Unknown provider", "VALIDATION_ERROR");
   }
@@ -185,5 +187,72 @@ async function exchangeGitHub(env: Env, code: string): Promise<OAuthUserProfile>
     subject: String(user.id),
     email,
     name: user.name ?? user.login,
+  };
+}
+
+async function exchangeMicrosoft(env: Env, code: string): Promise<OAuthUserProfile> {
+  const clientId = env.OAUTH_MICROSOFT_CLIENT_ID;
+  const clientSecret = env.OAUTH_MICROSOFT_CLIENT_SECRET;
+  if (!clientId || !clientSecret) {
+    throw createAppError(501, "Microsoft sign-in is not configured", "OAUTH_NOT_CONFIGURED");
+  }
+
+  const tokenRes = await fetch(
+    "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        code,
+        client_id: clientId,
+        client_secret: clientSecret,
+        redirect_uri: redirectUri(env, "microsoft"),
+        grant_type: "authorization_code",
+        scope: "openid profile email User.Read",
+      }),
+    }
+  );
+
+  if (!tokenRes.ok) {
+    oauthUpstreamError("microsoft", await tokenRes.text());
+    throw createAppError(502, "Sign-in failed. Please try again.", "OAUTH_UPSTREAM");
+  }
+
+  const tokenPayload = (await tokenRes.json()) as { access_token?: string };
+  if (!tokenPayload.access_token) {
+    oauthUpstreamError("microsoft", "missing access_token");
+    throw createAppError(502, "Sign-in failed. Please try again.", "OAUTH_UPSTREAM");
+  }
+
+  const userRes = await fetch("https://graph.microsoft.com/v1.0/me", {
+    headers: { Authorization: `Bearer ${tokenPayload.access_token}` },
+  });
+
+  if (!userRes.ok) {
+    oauthUpstreamError("microsoft", await userRes.text());
+    throw createAppError(502, "Sign-in failed. Please try again.", "OAUTH_UPSTREAM");
+  }
+
+  const user = (await userRes.json()) as {
+    id?: string;
+    displayName?: string;
+    mail?: string | null;
+    userPrincipalName?: string | null;
+  };
+
+  const email = (user.mail || user.userPrincipalName || "").toLowerCase();
+  if (!user.id || !email) {
+    throw createAppError(
+      403,
+      "Microsoft did not share an email. Use another account or Google sign-in.",
+      "OAUTH_EMAIL_MISSING"
+    );
+  }
+
+  return {
+    provider: "microsoft",
+    subject: user.id,
+    email,
+    name: user.displayName,
   };
 }

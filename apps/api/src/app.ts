@@ -30,6 +30,10 @@ import { createWebhooksHandlers } from "./controllers/webhooks.controller.js";
 import { createAuditHandlers } from "./controllers/audit.controller.js";
 import { createDashboardHandlers } from "./controllers/dashboard.controller.js";
 import { createPublicHandlers } from "./controllers/public.controller.js";
+import { createContactHandlers } from "./controllers/contact.controller.js";
+import { createContactService } from "./services/contact.service.js";
+import { createEngagementHandlers } from "./controllers/engagement.controller.js";
+import { createEngagementService } from "./services/engagement.service.js";
 import { createBillingHandlers } from "./controllers/billing.controller.js";
 import { createDashboardService } from "./services/dashboard.service.js";
 import { createBillingService } from "./services/billing.service.js";
@@ -117,6 +121,8 @@ export async function buildApp(env: Env) {
     auditHandlers: createAuditHandlers(auditService),
     dashboardHandlers: createDashboardHandlers(createDashboardService(db)),
     publicHandlers: createPublicHandlers(env, authProvidersService),
+    contactHandlers: createContactHandlers(createContactService(db, env)),
+    engagementHandlers: createEngagementHandlers(createEngagementService(db)),
     billingHandlers: createBillingHandlers(createBillingService(db)),
     env,
     db,

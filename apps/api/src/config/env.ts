@@ -25,7 +25,9 @@ const envSchema = z.object({
       }
     }, "MASTER_KEY must be base64 of exactly 32 bytes (openssl rand -base64 32)"),
   /** Comma-separated origins: app + future marketing site */
-  CORS_ORIGIN: z.string().default("http://localhost:5173"),
+  CORS_ORIGIN: z.string().default(
+    "http://localhost:5173,http://localhost:3000,http://localhost:8000"
+  ),
   /** Public app origin (SSO return + catalog login URL) */
   PUBLIC_APP_URL: z.string().default("http://localhost:5173"),
   /** Optional marketing site origin — add the same value to CORS_ORIGIN */
@@ -85,6 +87,8 @@ const envSchema = z.object({
   OAUTH_GOOGLE_CLIENT_SECRET: z.string().optional(),
   OAUTH_GITHUB_CLIENT_ID: z.string().optional(),
   OAUTH_GITHUB_CLIENT_SECRET: z.string().optional(),
+  OAUTH_MICROSOFT_CLIENT_ID: z.string().optional(),
+  OAUTH_MICROSOFT_CLIENT_SECRET: z.string().optional(),
   /** Public API base for OAuth redirect URIs (defaults to localhost API) */
   OAUTH_REDIRECT_BASE_URL: z.string().default("http://localhost:8080"),
   /**
@@ -94,6 +98,8 @@ const envSchema = z.object({
   MISTRAL_API_KEY: z.string().optional(),
   MISTRAL_API_URL: z.string().optional(),
   MISTRAL_MODEL: z.string().optional(),
+  /** Inbox for marketing contact / buy-coffee form submissions */
+  CONTACT_NOTIFY_EMAIL: z.string().email().optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;

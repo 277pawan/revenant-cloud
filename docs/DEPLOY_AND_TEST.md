@@ -33,6 +33,9 @@ Frontend pricing: update manually in `revenant-cloud-web` when you change amount
 
 ---
 
+> **Full production guide (env backend vs frontend, OAuth consoles, smoke test):**  
+> [`docs/PRODUCTION_DEPLOY.md`](./PRODUCTION_DEPLOY.md)
+
 ## Docker Hub — publish agent
 
 **Prerequisites**

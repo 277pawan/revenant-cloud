@@ -394,6 +394,41 @@ export const weeklyDigestLog = pgTable(
   ]
 );
 
+/** Marketing site — Talk to us / Buy coffee forms */
+export const contactSubmissions = pgTable("contact_submissions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  type: varchar("type", { length: 32 }).notNull(),
+  name: varchar("name", { length: 255 }).notNull(),
+  email: varchar("email", { length: 255 }).notNull(),
+  message: text("message"),
+  source: varchar("source", { length: 64 }).notNull().default("marketing"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** Aggregate counters per surface (marketing | app) */
+export const siteTrafficCounters = pgTable("site_traffic_counters", {
+  site: varchar("site", { length: 32 }).primaryKey(),
+  totalVisits: integer("total_visits").notNull().default(0),
+  totalHeroViews: integer("total_hero_views").notNull().default(0),
+  totalLogins: integer("total_logins").notNull().default(0),
+  totalRegisters: integer("total_registers").notNull().default(0),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** Detailed engagement events (visits, hero, login, register, page_view) */
+export const siteEngagementEvents = pgTable("site_engagement_events", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  site: varchar("site", { length: 32 }).notNull(),
+  eventType: varchar("event_type", { length: 64 }).notNull(),
+  path: text("path"),
+  visitorId: varchar("visitor_id", { length: 64 }).notNull(),
+  userId: uuid("user_id").references(() => users.id, { onDelete: "set null" }),
+  userEmail: varchar("user_email", { length: 255 }),
+  visibility: varchar("visibility", { length: 32 }).notNull().default("visible"),
+  meta: text("meta"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export type Organization = typeof organizations.$inferSelect;
 export type User = typeof users.$inferSelect;
 export type DatabaseRow = typeof databases.$inferSelect;

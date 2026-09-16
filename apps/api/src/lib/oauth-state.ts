@@ -5,6 +5,8 @@ export interface OAuthStatePayload {
   issuedAt: number;
   nonce: string;
   inviteToken?: string;
+  /** OAuth opened in a browser popup from the SPA */
+  popup?: boolean;
 }
 
 function signPart(secret: string, b64: string): string {
@@ -38,7 +40,8 @@ export function verifyOAuthState(
     typeof payload.returnTo !== "string" ||
     typeof payload.issuedAt !== "number" ||
     typeof payload.nonce !== "string" ||
-    (payload.inviteToken !== undefined && typeof payload.inviteToken !== "string")
+    (payload.inviteToken !== undefined && typeof payload.inviteToken !== "string") ||
+    (payload.popup !== undefined && typeof payload.popup !== "boolean")
   ) {
     throw new Error("Invalid OAuth state payload");
   }

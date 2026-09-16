@@ -11,6 +11,8 @@ import type { WebhooksHandlers } from "../../controllers/webhooks.controller.js"
 import type { AuditHandlers } from "../../controllers/audit.controller.js";
 import type { DashboardHandlers } from "../../controllers/dashboard.controller.js";
 import type { PublicHandlers } from "../../controllers/public.controller.js";
+import type { ContactHandlers } from "../../controllers/contact.controller.js";
+import type { EngagementHandlers } from "../../controllers/engagement.controller.js";
 import type { BillingHandlers } from "../../controllers/billing.controller.js";
 import type { Env } from "../../config/env.js";
 import type { Database } from "../../db/index.js";
@@ -29,6 +31,7 @@ import { auditRoutes } from "./audit.routes.js";
 import { dashboardRoutes } from "./dashboard.routes.js";
 import { publicRoutes } from "./public.routes.js";
 import { billingRoutes } from "./billing.routes.js";
+import { engagementRoutes } from "./engagement.routes.js";
 
 export async function registerV1Routes(
   app: FastifyInstance,
@@ -45,6 +48,8 @@ export async function registerV1Routes(
     auditHandlers: AuditHandlers;
     dashboardHandlers: DashboardHandlers;
     publicHandlers: PublicHandlers;
+    contactHandlers: ContactHandlers;
+    engagementHandlers: EngagementHandlers;
     billingHandlers: BillingHandlers;
     env: Env;
     db: Database;
@@ -54,7 +59,12 @@ export async function registerV1Routes(
   await app.register(
     async (api) => {
       await healthRoutes(api);
-      await publicRoutes(api, deps.publicHandlers);
+      await publicRoutes(
+        api,
+        deps.publicHandlers,
+        deps.contactHandlers,
+        deps.engagementHandlers
+      );
       await authRoutes(api, deps.authHandlers);
       await databasesRoutes(api, deps.databasesHandlers);
       await plansRoutes(api, deps.plansHandlers);
@@ -72,6 +82,7 @@ export async function registerV1Routes(
       await webhooksRoutes(api, deps.webhooksHandlers);
       await auditRoutes(api, deps.auditHandlers);
       await dashboardRoutes(api, deps.dashboardHandlers);
+      await engagementRoutes(api, deps.engagementHandlers);
       await billingRoutes(api, deps.billingHandlers);
     },
     { prefix: "/api/v1" }
