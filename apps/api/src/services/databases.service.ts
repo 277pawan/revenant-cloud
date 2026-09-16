@@ -9,7 +9,7 @@ import {
 } from "../db/schema.js";
 import { decryptSecret, encryptSecret } from "../lib/crypto.js";
 import { createAppError } from "../lib/errors.js";
-import { assertPlanLimit } from "../lib/plan-limits.js";
+import { assertPlanLimit, assertRecoveryModeAllowed } from "../lib/plan-limits.js";
 import type {
   CreateDatabaseInput,
   UpdateDatabaseInput,
@@ -271,7 +271,8 @@ export function createDatabasesService(db: Database, masterKey: string) {
       input: CreateDatabaseInput
     ): Promise<DatabaseResource> {
       await assertPlanLimit(db, organizationId, "databases");
-      const recoveryMode = input.recoveryMode ?? "direct";
+      const recoveryMode = input.recoveryMode ?? "aws-rds";
+      await assertRecoveryModeAllowed(db, organizationId, recoveryMode);
       const [row] = await db
         .insert(databases)
         .values({

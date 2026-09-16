@@ -3,6 +3,7 @@ import type { JobResource } from "@revenant/shared";
 import type { Database } from "../db/index.js";
 import { databases, jobs, runners, validationPlans } from "../db/schema.js";
 import { createAppError } from "../lib/errors.js";
+import { assertSelfHostedAgentAllowed } from "../lib/plan-limits.js";
 import { generateRunnerToken } from "../lib/runner-token.js";
 
 export type PlanServiceResource = {
@@ -103,6 +104,8 @@ export function createRunnersService(db: Database) {
       organizationId: string,
       databaseId: string
     ): Promise<{ token: string; runnerId: string }> {
+      await assertSelfHostedAgentAllowed(db, organizationId);
+
       const plan = await db
         .select({ name: validationPlans.name })
         .from(validationPlans)

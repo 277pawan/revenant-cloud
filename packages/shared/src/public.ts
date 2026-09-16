@@ -11,6 +11,10 @@ export interface PublicCatalogResponse {
     marketingUrl: string | null;
   };
   plans: PlanDefinition[];
+  billing: {
+    starterTrialDays: number;
+    razorpayReady: boolean;
+  };
   auth: AuthProvidersResponse & {
     oauthStartBasePath: string;
   };

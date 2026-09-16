@@ -1,4 +1,8 @@
-import { PLAN_DEFINITIONS, type PublicCatalogResponse } from "@revenant/shared";
+import {
+  listCatalogPlans,
+  STARTER_TRIAL_DAYS,
+  type PublicCatalogResponse,
+} from "@revenant/shared";
 import type { AuthProvidersService } from "../services/auth-providers.service.js";
 import type { Env } from "../config/env.js";
 import { SESSION_COOKIE } from "../lib/session.js";
@@ -18,7 +22,11 @@ export function createPublicHandlers(
           appLoginUrl: `${env.PUBLIC_APP_URL.replace(/\/$/, "")}/login`,
           marketingUrl: env.PUBLIC_MARKETING_URL ?? null,
         },
-        plans: Object.values(PLAN_DEFINITIONS),
+        plans: listCatalogPlans(),
+        billing: {
+          starterTrialDays: STARTER_TRIAL_DAYS,
+          razorpayReady: false,
+        },
         auth: {
           ...auth,
           oauthStartBasePath: "/api/v1/auth/oauth",

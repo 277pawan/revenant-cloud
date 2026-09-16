@@ -1,8 +1,10 @@
 /** Shared types between API and web. Keep stable — breaking changes hurt both apps. */
 
+import type { OrganizationPlan, SubscriptionStatus } from "./plans.js";
+
 export type UserRole = "admin" | "executor" | "viewer";
 
-export type OrganizationPlan = "starter" | "pro" | "enterprise";
+export type { OrganizationPlan, CatalogPlanId, SubscriptionStatus } from "./plans.js";
 
 /**
  * Permissions used by requirePermission / requireRoles.
@@ -93,9 +95,13 @@ export interface AuthUser {
   organizationId: string;
   organizationName: string;
   organizationPlan: OrganizationPlan;
+  subscriptionStatus?: SubscriptionStatus;
+  trialEndsAt?: string | null;
+  subscriptionActive?: boolean;
 }
 
 export * from "./plans.js";
+export * from "./billing.js";
 export * from "./auth.js";
 export * from "./public.js";
 

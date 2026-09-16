@@ -17,6 +17,11 @@ export const organizations = pgTable("organizations", {
   id: uuid("id").primaryKey().defaultRandom(),
   name: varchar("name", { length: 255 }).notNull(),
   plan: varchar("plan", { length: 50 }).notNull().default("starter"),
+  /** trialing | active | past_due | canceled — Razorpay webhook updates active */
+  subscriptionStatus: varchar("subscription_status", { length: 50 })
+    .notNull()
+    .default("trialing"),
+  trialEndsAt: timestamp("trial_ends_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });

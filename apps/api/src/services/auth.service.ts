@@ -1,7 +1,16 @@
 import { createHash, randomBytes } from "node:crypto";
 import { and, eq, gt, isNull } from "drizzle-orm";
 import type { FastifyReply } from "fastify";
-import type { AuthUser, OrganizationPlan, UserRole } from "@revenant/shared";
+import type {
+  AuthUser,
+  OrganizationPlan,
+  SubscriptionStatus,
+  UserRole,
+} from "@revenant/shared";
+import {
+  isSubscriptionActive,
+  trialEndsAtFromNow,
+} from "../lib/org-subscription.js";
 import type { Database } from "../db/index.js";
 import {
   organizationInvites,
@@ -44,10 +53,23 @@ function defaultOrgName(email: string, name?: string): string {
   return `${domain.charAt(0).toUpperCase()}${domain.slice(1)}`;
 }
 
+type OrgRow = {
+  id: string;
+  name: string;
+  plan: string | null;
+  subscriptionStatus?: string | null;
+  trialEndsAt?: Date | null;
+};
+
 function toAuthUser(
   user: { id: string; email: string; role: string },
-  org: { id: string; name: string; plan: string | null }
+  org: OrgRow
 ): AuthUser {
+  const billing = {
+    plan: org.plan ?? "starter",
+    subscriptionStatus: org.subscriptionStatus ?? "trialing",
+    trialEndsAt: org.trialEndsAt ?? null,
+  };
   return {
     id: user.id,
     email: user.email,
@@ -55,6 +77,9 @@ function toAuthUser(
     organizationId: org.id,
     organizationName: org.name,
     organizationPlan: (org.plan ?? "starter") as OrganizationPlan,
+    subscriptionStatus: billing.subscriptionStatus as SubscriptionStatus,
+    trialEndsAt: org.trialEndsAt?.toISOString() ?? null,
+    subscriptionActive: isSubscriptionActive(billing),
   };
 }
 
@@ -76,7 +101,12 @@ export function createAuthService(db: Database, env: Env) {
       try {
         const [org] = await db
           .insert(organizations)
-          .values({ name: input.organizationName })
+          .values({
+            name: input.organizationName,
+            plan: "starter",
+            subscriptionStatus: "trialing",
+            trialEndsAt: trialEndsAtFromNow(),
+          })
           .returning();
 
         const [user] = await db
@@ -89,17 +119,7 @@ export function createAuthService(db: Database, env: Env) {
           })
           .returning();
 
-        return {
-          token: "",
-          user: {
-            id: user.id,
-            email: user.email,
-            role: "admin",
-            organizationId: org.id,
-            organizationName: org.name,
-            organizationPlan: (org.plan ?? "starter") as OrganizationPlan,
-          },
-        };
+        return { token: "", user: toAuthUser(user, org) };
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : "";
         if (message.includes("unique") || message.includes("duplicate")) {
@@ -165,17 +185,7 @@ export function createAuthService(db: Database, env: Env) {
           .set({ acceptedAt: now })
           .where(eq(organizationInvites.id, row.invite.id));
 
-        return {
-          token: "",
-          user: {
-            id: user.id,
-            email: user.email,
-            role: user.role as UserRole,
-            organizationId: row.org.id,
-            organizationName: row.org.name,
-            organizationPlan: (row.org.plan ?? "starter") as OrganizationPlan,
-          },
-        };
+        return { token: "", user: toAuthUser(user, row.org) };
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : "";
         if (message.includes("unique") || message.includes("duplicate")) {
@@ -410,7 +420,12 @@ export function createAuthService(db: Database, env: Env) {
       try {
         const [org] = await db
           .insert(organizations)
-          .values({ name: defaultOrgName(email, profile.name) })
+          .values({
+            name: defaultOrgName(email, profile.name),
+            plan: "starter",
+            subscriptionStatus: "trialing",
+            trialEndsAt: trialEndsAtFromNow(),
+          })
           .returning();
 
         const [user] = await db
@@ -463,14 +478,7 @@ export function createAuthService(db: Database, env: Env) {
         throw createAppError(401, "Invalid email or password", "INVALID_CREDENTIALS");
       }
 
-      return {
-        id: row.user.id,
-        email: row.user.email,
-        role: row.user.role as UserRole,
-        organizationId: row.org.id,
-        organizationName: row.org.name,
-        organizationPlan: (row.org.plan ?? "starter") as OrganizationPlan,
-      };
+      return toAuthUser(row.user, row.org);
     },
 
     async issueSession(

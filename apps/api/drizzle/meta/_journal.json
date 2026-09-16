@@ -92,6 +92,13 @@
       "when": 1789066800000,
       "tag": "0012_password_reset",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1789067600000,
+      "tag": "0013_org_trial_billing",
+      "breakpoints": true
     }
   ]
 }

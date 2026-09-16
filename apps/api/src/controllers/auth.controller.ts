@@ -1,7 +1,8 @@
 import { eq } from "drizzle-orm";
 import { randomBytes } from "node:crypto";
 import type { FastifyReply, FastifyRequest } from "fastify";
-import type { OAuthProviderId, OrganizationPlan } from "@revenant/shared";
+import type { AuthUser, OAuthProviderId, OrganizationPlan } from "@revenant/shared";
+import { isSubscriptionActive } from "../lib/org-subscription.js";
 import {
   acceptInviteSchema,
   forgotPasswordSchema,
@@ -142,15 +143,28 @@ export function createAuthHandlers(
 
     me: async (request: FastifyRequest) => {
       const [org] = await request.server.db
-        .select({ plan: organizations.plan })
+        .select({
+          plan: organizations.plan,
+          subscriptionStatus: organizations.subscriptionStatus,
+          trialEndsAt: organizations.trialEndsAt,
+        })
         .from(organizations)
         .where(eq(organizations.id, request.user.organizationId))
         .limit(1);
+
+      const billing = {
+        plan: org?.plan ?? "starter",
+        subscriptionStatus: org?.subscriptionStatus ?? "trialing",
+        trialEndsAt: org?.trialEndsAt ?? null,
+      };
 
       return {
         user: {
           ...request.user,
           organizationPlan: (org?.plan ?? "starter") as OrganizationPlan,
+          subscriptionStatus: billing.subscriptionStatus as AuthUser["subscriptionStatus"],
+          trialEndsAt: org?.trialEndsAt?.toISOString() ?? null,
+          subscriptionActive: isSubscriptionActive(billing),
         },
       };
     },

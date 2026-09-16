@@ -11,6 +11,7 @@ import type { WebhooksHandlers } from "../../controllers/webhooks.controller.js"
 import type { AuditHandlers } from "../../controllers/audit.controller.js";
 import type { DashboardHandlers } from "../../controllers/dashboard.controller.js";
 import type { PublicHandlers } from "../../controllers/public.controller.js";
+import type { BillingHandlers } from "../../controllers/billing.controller.js";
 import type { Env } from "../../config/env.js";
 import type { Database } from "../../db/index.js";
 import type { JobsService } from "../../services/jobs.service.js";
@@ -27,6 +28,7 @@ import { webhooksRoutes } from "./webhooks.routes.js";
 import { auditRoutes } from "./audit.routes.js";
 import { dashboardRoutes } from "./dashboard.routes.js";
 import { publicRoutes } from "./public.routes.js";
+import { billingRoutes } from "./billing.routes.js";
 
 export async function registerV1Routes(
   app: FastifyInstance,
@@ -43,6 +45,7 @@ export async function registerV1Routes(
     auditHandlers: AuditHandlers;
     dashboardHandlers: DashboardHandlers;
     publicHandlers: PublicHandlers;
+    billingHandlers: BillingHandlers;
     env: Env;
     db: Database;
     jobsService: JobsService;
@@ -69,6 +72,7 @@ export async function registerV1Routes(
       await webhooksRoutes(api, deps.webhooksHandlers);
       await auditRoutes(api, deps.auditHandlers);
       await dashboardRoutes(api, deps.dashboardHandlers);
+      await billingRoutes(api, deps.billingHandlers);
     },
     { prefix: "/api/v1" }
   );

@@ -270,16 +270,22 @@ export function createDashboardService(db: Database) {
           href: "/settings/validation-plans",
         },
         {
-          id: "agent",
-          label: "Connect an agent (Services)",
-          done: hasRunner,
-          href: "/settings/runners",
+          id: "aws",
+          label: "Add AWS keys for managed sandbox drills (RDS snapshot → verify)",
+          done: dbRows.some((r) => r.db.recoveryMode === "aws-rds" && r.hasAws),
+          href: "/databases/new",
         },
         {
           id: "drill",
-          label: "Complete your first restore drill",
+          label: "Run your first managed restore drill (no Docker agent)",
           done: hasCompletedJob,
           href: "/workflows",
+        },
+        {
+          id: "agent",
+          label: "Optional: private-network agent (Pro / direct Postgres)",
+          done: hasRunner,
+          href: "/settings/runners",
         },
         {
           id: "schedule",

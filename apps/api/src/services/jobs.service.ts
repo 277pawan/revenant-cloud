@@ -16,6 +16,11 @@ import {
 } from "../db/schema.js";
 import { decryptSecret } from "../lib/crypto.js";
 import { createAppError } from "../lib/errors.js";
+import {
+  assertSandboxConcurrency,
+  assertSelfHostedAgentAllowed,
+  assertSubscriptionActive,
+} from "../lib/plan-limits.js";
 import type { RunnerAuthContext } from "../middleware/runner.js";
 import type { CompleteJobInput, CreateJobInput } from "../validations/jobs.schema.js";
 import {
@@ -137,6 +142,11 @@ export function createJobsService(db: Database, masterKey: string) {
       throw createAppError(404, "Database not found", "NOT_FOUND");
     }
 
+    await assertSubscriptionActive(db, organizationId);
+    if (dbRows[0].recoveryMode === "aws-rds") {
+      await assertSandboxConcurrency(db, organizationId);
+    }
+
     const [job] = await db
       .insert(jobs)
       .values({
@@ -190,6 +200,11 @@ export function createJobsService(db: Database, masterKey: string) {
       );
     }
 
+    await assertSubscriptionActive(db, organizationId);
+    if (dbRows[0].recoveryMode === "aws-rds") {
+      await assertSandboxConcurrency(db, organizationId);
+    }
+
     const [job] = await db
       .insert(jobs)
       .values({
@@ -209,6 +224,11 @@ export function createJobsService(db: Database, masterKey: string) {
    * Org agent only sees jobs for its database — not org-wide first-come-first-served.
    */
   async claimNext(auth: RunnerAuthContext) {
+    if (auth.type === "org") {
+      await assertSelfHostedAgentAllowed(db, auth.organizationId);
+      await assertSubscriptionActive(db, auth.organizationId);
+    }
+
     const conditions = [eq(jobs.status, "pending")];
     if (auth.type === "org") {
       conditions.push(eq(jobs.organizationId, auth.organizationId));

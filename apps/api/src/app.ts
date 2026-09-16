@@ -30,7 +30,9 @@ import { createWebhooksHandlers } from "./controllers/webhooks.controller.js";
 import { createAuditHandlers } from "./controllers/audit.controller.js";
 import { createDashboardHandlers } from "./controllers/dashboard.controller.js";
 import { createPublicHandlers } from "./controllers/public.controller.js";
+import { createBillingHandlers } from "./controllers/billing.controller.js";
 import { createDashboardService } from "./services/dashboard.service.js";
+import { createBillingService } from "./services/billing.service.js";
 import { SESSION_COOKIE } from "./lib/session.js";
 import { isAllowedCorsOrigin, parseCorsOrigins } from "./lib/cors-origins.js";
 import type { AuthUser } from "@revenant/shared";
@@ -115,6 +117,7 @@ export async function buildApp(env: Env) {
     auditHandlers: createAuditHandlers(auditService),
     dashboardHandlers: createDashboardHandlers(createDashboardService(db)),
     publicHandlers: createPublicHandlers(env, authProvidersService),
+    billingHandlers: createBillingHandlers(createBillingService(db)),
     env,
     db,
     jobsService,
