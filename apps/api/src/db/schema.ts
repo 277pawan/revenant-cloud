@@ -11,6 +11,7 @@ import {
   integer,
   timestamp,
   uniqueIndex,
+  jsonb,
 } from "drizzle-orm/pg-core";
 
 export const organizations = pgTable("organizations", {
@@ -425,7 +426,7 @@ export const siteEngagementEvents = pgTable("site_engagement_events", {
   userId: uuid("user_id").references(() => users.id, { onDelete: "set null" }),
   userEmail: varchar("user_email", { length: 255 }),
   visibility: varchar("visibility", { length: 32 }).notNull().default("visible"),
-  meta: text("meta"),
+  meta: jsonb("meta"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

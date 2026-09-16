@@ -99,6 +99,20 @@
       "when": 1789067600000,
       "tag": "0013_org_trial_billing",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1789068400000,
+      "tag": "0014_contact_submissions",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1789069200000,
+      "tag": "0015_site_engagement",
+      "breakpoints": true
     }
   ]
 }

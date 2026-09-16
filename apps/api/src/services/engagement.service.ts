@@ -66,7 +66,7 @@ export function createEngagementService(db: Database) {
           userId: input.userId ?? null,
           userEmail: input.userEmail?.toLowerCase() ?? null,
           visibility: input.visibility,
-          meta: input.meta ? JSON.stringify(input.meta) : null,
+          meta: input.meta ?? null,
         })
         .returning({ id: siteEngagementEvents.id });
 
