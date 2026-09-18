@@ -17,7 +17,8 @@
     "db:reset": "npm run db:reset -w @revenant/api",
     "db:studio": "npm run db:studio -w @revenant/api",
     "runner:stub": "npm run runner:stub -w @revenant/api",
-    "typecheck": "npm run typecheck -w @revenant/shared && npm run typecheck -w @revenant/api"
+    "typecheck": "npm run typecheck -w @revenant/shared && npm run typecheck -w @revenant/api",
+    "start": "npm run start -w @revenant/api"
   },
   "engines": {
     "node": ">=20"

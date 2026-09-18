@@ -201,6 +201,7 @@ export interface HealthResponse {
   status: "ok";
   service: "revenant-api";
   version: string;
+  environment?: string;
 }
 
 export type DatabaseEngine = "postgres";

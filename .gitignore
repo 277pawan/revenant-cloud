@@ -2,8 +2,8 @@ node_modules/
 dist/
 build/
 .env
-.env.local
-.env.production
+.env.*
+!.env.example
 agent.yaml
 *.log
 .DS_Store

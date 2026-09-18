@@ -105,7 +105,11 @@ const envSchema = z.object({
 export type Env = z.infer<typeof envSchema>;
 
 export function loadEnv(): Env {
-  const parsed = envSchema.safeParse(process.env);
+  // Cloud Run injects PORT; local dev uses API_PORT.
+  const parsed = envSchema.safeParse({
+    ...process.env,
+    API_PORT: process.env.PORT ?? process.env.API_PORT,
+  });
   if (!parsed.success) {
     console.error("Invalid environment:", parsed.error.flatten().fieldErrors);
     process.exit(1);

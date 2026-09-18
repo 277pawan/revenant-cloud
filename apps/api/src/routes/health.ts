@@ -9,5 +9,6 @@ export async function rootHealthRoutes(app: FastifyInstance) {
     status: "ok",
     service: "revenant-api",
     version: VERSION,
+    environment: process.env.NODE_ENV,
   }));
 }
