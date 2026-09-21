@@ -23,6 +23,7 @@ import type { OAuthUserProfile } from "../lib/oauth-exchange.js";
 import { hashPassword, verifyPassword } from "../lib/password.js";
 import { clearSessionCookie, setSessionCookie } from "../lib/session.js";
 import { createAppError } from "../lib/errors.js";
+import { resolveEmailBrand } from "../lib/email-layout.js";
 import {
   passwordResetHtml,
   passwordResetPlainText,
@@ -236,7 +237,7 @@ export function createAuthService(db: Database, env: Env) {
           to: email,
           subject: "Reset your Revenant Cloud password",
           text: passwordResetPlainText(resetUrl),
-          html: passwordResetHtml(resetUrl),
+          html: passwordResetHtml(resetUrl, resolveEmailBrand(env)),
         });
       }
 

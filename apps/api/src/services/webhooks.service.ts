@@ -289,6 +289,7 @@ export function createWebhooksService(db: Database, masterKey: string, env: Env)
           attempts++;
           const result = await deliverToProvider(endpoint, job, event, masterKey, {
             appUrl: env.PUBLIC_APP_URL,
+            marketingUrl: env.PUBLIC_MARKETING_URL,
           });
           ok = result.ok;
           httpStatus = result.httpStatus;

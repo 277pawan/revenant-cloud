@@ -24,4 +24,5 @@ export type DeliverContext = {
   provider: WebhookProvider;
   config: Record<string, unknown>;
   appUrl?: string;
+  marketingUrl?: string;
 };

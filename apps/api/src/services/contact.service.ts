@@ -6,6 +6,8 @@ import {
   isTransactionalMailConfigured,
   sendTransactionalMail,
 } from "../lib/transactional-mail.js";
+import { resolveEmailBrand } from "../lib/email-layout.js";
+import { contactFormHtml } from "../lib/notification-templates.js";
 import { createAppError } from "../lib/errors.js";
 
 const NOTIFY_DEFAULT = "bpawan277@gmail.com";
@@ -22,26 +24,6 @@ function subjectFor(input: ContactSubmitInput): string {
   return `[Revenant] Talk to us — ${input.name}`;
 }
 
-function htmlBody(input: ContactSubmitInput): string {
-  const label = input.type === "coffee" ? "Buy coffee / funding" : "Talk to us";
-  const amount =
-    input.type === "coffee" && input.amountInr
-      ? `<p><strong>Amount:</strong> ₹${input.amountInr}</p>`
-      : "";
-  const msg = input.message?.trim()
-    ? `<p><strong>Message:</strong></p><p style="white-space:pre-wrap">${escapeHtml(input.message)}</p>`
-    : "<p><em>No message provided.</em></p>";
-  return `
-    <h2>${label}</h2>
-    <p><strong>Name:</strong> ${escapeHtml(input.name)}</p>
-    <p><strong>Email:</strong> <a href="mailto:${escapeHtml(input.email)}">${escapeHtml(input.email)}</a></p>
-    ${amount}
-    ${msg}
-    <hr />
-    <p style="color:#64748b;font-size:12px">Sent from revenant.dev marketing site</p>
-  `;
-}
-
 function textBody(input: ContactSubmitInput): string {
   const label = input.type === "coffee" ? "Buy coffee / funding" : "Talk to us";
   const amount =
@@ -49,14 +31,6 @@ function textBody(input: ContactSubmitInput): string {
       ? `Amount: ₹${input.amountInr}\n`
       : "";
   return `${label}\n\nName: ${input.name}\nEmail: ${input.email}\n${amount}\n${input.message ?? "(no message)"}`;
-}
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
 }
 
 export function createContactService(db: Database, env: Env) {
@@ -81,6 +55,7 @@ export function createContactService(db: Database, env: Env) {
       }
 
       const to = notifyEmail(env);
+      const brand = resolveEmailBrand(env);
 
       if (isTransactionalMailConfigured(env)) {
         await sendTransactionalMail(env, {
@@ -88,7 +63,14 @@ export function createContactService(db: Database, env: Env) {
           replyTo: input.email,
           subject: subjectFor(input),
           text: textBody(input),
-          html: htmlBody(input),
+          html: contactFormHtml({
+            brand,
+            type: input.type,
+            name: input.name,
+            email: input.email,
+            message: input.message,
+            amountInr: input.amountInr,
+          }),
         });
       } else if (env.NODE_ENV === "development") {
         console.log(`[dev] Contact form (${input.type}) from ${input.email}:`, input.message);

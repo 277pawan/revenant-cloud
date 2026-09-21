@@ -32,6 +32,8 @@ const envSchema = z.object({
   PUBLIC_APP_URL: z.string().default("http://localhost:5173"),
   /** Optional marketing site origin — add the same value to CORS_ORIGIN */
   PUBLIC_MARKETING_URL: z.string().optional(),
+  /** Logo in transactional emails (PNG). Defaults to marketing or app /revenant_logo.png */
+  PUBLIC_EMAIL_LOGO_URL: z.string().url().optional(),
   /** e.g. .revenant.cloud so website + app share the session cookie */
   COOKIE_DOMAIN: z.string().optional(),
   COOKIE_SECURE: z

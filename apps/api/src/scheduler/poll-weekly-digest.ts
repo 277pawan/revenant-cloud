@@ -7,6 +7,7 @@ import {
   weeklyDigestPlainText,
 } from "../lib/notification-templates.js";
 import { sendTransactionalMail } from "../lib/transactional-mail.js";
+import { resolveEmailBrand } from "../lib/email-layout.js";
 import { createDashboardService } from "../services/dashboard.service.js";
 
 function isoWeekKey(date: Date): string {
@@ -77,6 +78,7 @@ export function startWeeklyDigestPoll(options: {
         total: overview.summary.totalDatabases,
         failures24h: overview.summary.failures24h,
         appUrl: env.PUBLIC_APP_URL,
+        brand: resolveEmailBrand(env),
       };
 
       try {

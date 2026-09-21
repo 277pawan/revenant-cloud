@@ -1,6 +1,7 @@
 import nodemailer from "nodemailer";
 import type { DeliverContext, DeliveryResult } from "./types.js";
 import { decryptSecret } from "../lib/crypto.js";
+import { emailBrandFromUrls } from "../lib/email-layout.js";
 import {
   jobAlertHtml,
   jobAlertPlainText,
@@ -57,12 +58,14 @@ export async function deliverEmail(
     auth: { user: smtpUser, pass: smtpPassword },
   });
 
+  const appUrl = ctx.appUrl ?? "http://localhost:5173";
+  const brand = emailBrandFromUrls(appUrl, ctx.marketingUrl);
   const subject = jobAlertSubject(ctx.event, ctx.job.databaseName);
-  const text = jobAlertPlainText({ event: ctx.event, job: ctx.job });
+  const text = jobAlertPlainText({ event: ctx.event, job: ctx.job, appUrl });
   const html = jobAlertHtml({
     event: ctx.event,
     job: ctx.job,
-    appUrl: ctx.appUrl,
+    brand,
   });
 
   try {

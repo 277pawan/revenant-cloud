@@ -25,6 +25,7 @@ export function loadDotenv(): void {
   for (const path of candidates) {
     if (seen.has(path) || !existsSync(path)) continue;
     seen.add(path);
-    config({ path, override: true });
+    // Shell / Cloud Run env wins over .env (override: false)
+    config({ path, override: false });
   }
 }

@@ -1,6 +1,5 @@
 import type { JobDetailResource } from "@revenant/shared";
-
-const BRAND = "#2563eb";
+import { type EmailBrand, escapeHtml, wrapEmailHtml } from "./email-layout.js";
 
 function eventMeta(event: string) {
   if (event === "job.pass") {
@@ -28,8 +27,10 @@ export function jobAlertSubject(event: string, workflow: string): string {
 export function jobAlertPlainText(ctx: {
   event: string;
   job: JobDetailResource;
+  appUrl?: string;
 }): string {
   const { label } = eventMeta(ctx.event);
+  const appUrl = ctx.appUrl ?? "http://localhost:5173";
   return [
     `Revenant restore drill — ${label}`,
     "",
@@ -40,7 +41,7 @@ export function jobAlertPlainText(ctx: {
     ctx.job.finishedAt ? `Finished: ${ctx.job.finishedAt}` : null,
     ctx.job.errorMessage ? `Details: ${ctx.job.errorMessage}` : null,
     "",
-    "Open Revenant Cloud to view evidence and fleet health.",
+    `View run: ${appUrl}/workflows/${ctx.job.databaseId}/runs/${ctx.job.id}`,
   ]
     .filter(Boolean)
     .join("\n");
@@ -49,67 +50,44 @@ export function jobAlertPlainText(ctx: {
 export function jobAlertHtml(ctx: {
   event: string;
   job: JobDetailResource;
-  appUrl?: string;
+  brand: EmailBrand;
 }): string {
   const meta = eventMeta(ctx.event);
-  const appUrl = ctx.appUrl ?? "http://localhost:5173";
+  const runUrl = `${ctx.brand.appUrl}/workflows/${ctx.job.databaseId}/runs/${ctx.job.id}`;
 
-  return `<!DOCTYPE html>
-<html>
-<body style="margin:0;padding:0;background:#f1f5f9;font-family:IBM Plex Sans,Inter,Segoe UI,sans-serif;color:#0f172a;">
-  <table width="100%" cellpadding="0" cellspacing="0" style="padding:32px 16px;">
-    <tr><td align="center">
-      <table width="100%" style="max-width:520px;background:#fff;border-radius:12px;border:1px solid #e2e8f0;overflow:hidden;">
-        <tr>
-          <td style="background:${BRAND};padding:20px 24px;color:#fff;">
-            <div style="font-size:13px;opacity:.9;letter-spacing:.04em;text-transform:uppercase;">Revenant Cloud</div>
-            <div style="font-size:22px;font-weight:700;margin-top:6px;">${meta.emoji} Restore drill ${meta.label.toLowerCase()}</div>
-          </td>
-        </tr>
-        <tr>
-          <td style="padding:24px;">
-            <p style="margin:0 0 16px;font-size:15px;line-height:1.5;">
-              <strong>${ctx.job.databaseName}</strong> finished with status
-              <span style="color:${meta.color};font-weight:700;"> ${ctx.job.status}</span>.
-            </p>
-            <table width="100%" style="border-collapse:collapse;font-size:14px;">
-              <tr>
-                <td style="padding:8px 0;color:#64748b;width:120px;">RTO</td>
-                <td style="padding:8px 0;font-weight:600;">${formatRto(ctx.job.rtoSeconds)}</td>
-              </tr>
-              <tr>
-                <td style="padding:8px 0;color:#64748b;">Job</td>
-                <td style="padding:8px 0;font-family:monospace;font-size:12px;">${ctx.job.id}</td>
-              </tr>
-              ${
-                ctx.job.finishedAt
-                  ? `<tr><td style="padding:8px 0;color:#64748b;">Finished</td><td style="padding:8px 0;">${ctx.job.finishedAt}</td></tr>`
-                  : ""
-              }
-              ${
-                ctx.job.errorMessage
-                  ? `<tr><td style="padding:8px 0;color:#64748b;vertical-align:top;">Details</td><td style="padding:8px 0;color:#b45309;">${ctx.job.errorMessage}</td></tr>`
-                  : ""
-              }
-            </table>
-            <p style="margin:24px 0 0;">
-              <a href="${appUrl}/workflows/${ctx.job.databaseId}/runs/${ctx.job.id}"
-                 style="display:inline-block;background:${BRAND};color:#fff;text-decoration:none;padding:10px 18px;border-radius:8px;font-weight:600;font-size:14px;">
-                View run details
-              </a>
-            </p>
-          </td>
-        </tr>
-        <tr>
-          <td style="padding:16px 24px;background:#f8fafc;border-top:1px solid #e2e8f0;font-size:12px;color:#64748b;">
-            Backups aren&apos;t the product. Recovery is.
-          </td>
-        </tr>
-      </table>
-    </td></tr>
-  </table>
-</body>
-</html>`;
+  const bodyHtml = `
+    <p style="margin:0 0 16px;">
+      <strong>${escapeHtml(ctx.job.databaseName)}</strong> finished with status
+      <span style="color:${meta.color};font-weight:700;"> ${escapeHtml(ctx.job.status)}</span>.
+    </p>
+    <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:14px;">
+      <tr>
+        <td style="padding:8px 0;color:#64748b;width:120px;">RTO</td>
+        <td style="padding:8px 0;font-weight:600;">${formatRto(ctx.job.rtoSeconds)}</td>
+      </tr>
+      <tr>
+        <td style="padding:8px 0;color:#64748b;">Job</td>
+        <td style="padding:8px 0;font-family:ui-monospace,monospace;font-size:12px;">${escapeHtml(ctx.job.id)}</td>
+      </tr>
+      ${
+        ctx.job.finishedAt
+          ? `<tr><td style="padding:8px 0;color:#64748b;">Finished</td><td style="padding:8px 0;">${escapeHtml(ctx.job.finishedAt)}</td></tr>`
+          : ""
+      }
+      ${
+        ctx.job.errorMessage
+          ? `<tr><td style="padding:8px 0;color:#64748b;vertical-align:top;">Details</td><td style="padding:8px 0;color:#b45309;">${escapeHtml(ctx.job.errorMessage)}</td></tr>`
+          : ""
+      }
+    </table>`;
+
+  return wrapEmailHtml({
+    brand: ctx.brand,
+    eyebrow: "Restore drill",
+    title: `${meta.emoji} Drill ${meta.label.toLowerCase()}`,
+    bodyHtml,
+    cta: { label: "View run details", url: runUrl },
+  });
 }
 
 export function weeklyDigestPlainText(input: {
@@ -152,69 +130,81 @@ export function weeklyDigestHtml(input: {
   critical: number;
   total: number;
   failures24h: number;
-  appUrl?: string;
+  brand: EmailBrand;
 }): string {
-  const appUrl = input.appUrl ?? "http://localhost:5173";
-  const pass =
-    input.passRate7d != null ? `${input.passRate7d}%` : "—";
+  const pass = input.passRate7d != null ? `${input.passRate7d}%` : "—";
 
-  return `<!DOCTYPE html>
-<html>
-<body style="margin:0;padding:0;background:#f1f5f9;font-family:IBM Plex Sans,Inter,Segoe UI,sans-serif;">
-  <table width="100%" cellpadding="0" cellspacing="0" style="padding:32px 16px;">
-    <tr><td align="center">
-      <table width="100%" style="max-width:520px;background:#fff;border-radius:12px;border:1px solid #e2e8f0;">
-        <tr>
-          <td style="background:${BRAND};padding:20px 24px;color:#fff;">
-            <div style="font-size:13px;opacity:.9;">Weekly DR digest</div>
-            <div style="font-size:22px;font-weight:700;margin-top:6px;">${input.orgName}</div>
-          </td>
-        </tr>
-        <tr>
-          <td style="padding:24px;font-size:14px;color:#0f172a;line-height:1.6;">
-            <p style="margin:0 0 16px;font-size:16px;font-weight:600;">${input.healthy}/${input.total} workflows healthy</p>
-            <table width="100%" style="font-size:14px;">
-              <tr><td style="color:#64748b;padding:6px 0;">7-day pass rate</td><td style="font-weight:700;">${pass}</td></tr>
-              <tr><td style="color:#64748b;padding:6px 0;">Avg RTO (7d)</td><td style="font-weight:700;">${formatRto(input.avgRtoSeconds7d)}</td></tr>
-              <tr><td style="color:#64748b;padding:6px 0;">Needs attention</td><td>${input.warning}</td></tr>
-              <tr><td style="color:#64748b;padding:6px 0;">At risk</td><td style="color:#dc2626;font-weight:600;">${input.critical}</td></tr>
-              <tr><td style="color:#64748b;padding:6px 0;">Failures (24h)</td><td>${input.failures24h}</td></tr>
-            </table>
-            <p style="margin:24px 0 0;">
-              <a href="${appUrl}" style="display:inline-block;background:${BRAND};color:#fff;text-decoration:none;padding:10px 18px;border-radius:8px;font-weight:600;">Open dashboard</a>
-            </p>
-          </td>
-        </tr>
-      </table>
-    </td></tr>
-  </table>
-</body>
-</html>`;
+  const bodyHtml = `
+    <p style="margin:0 0 16px;font-size:16px;font-weight:600;color:#0f172a;">
+      ${input.healthy}/${input.total} workflows healthy
+    </p>
+    <table width="100%" cellpadding="0" cellspacing="0" style="font-size:14px;border-collapse:collapse;">
+      <tr><td style="color:#64748b;padding:6px 0;">7-day pass rate</td><td style="font-weight:700;padding:6px 0;">${pass}</td></tr>
+      <tr><td style="color:#64748b;padding:6px 0;">Avg RTO (7d)</td><td style="font-weight:700;padding:6px 0;">${formatRto(input.avgRtoSeconds7d)}</td></tr>
+      <tr><td style="color:#64748b;padding:6px 0;">Needs attention</td><td style="padding:6px 0;">${input.warning}</td></tr>
+      <tr><td style="color:#64748b;padding:6px 0;">At risk</td><td style="color:#dc2626;font-weight:600;padding:6px 0;">${input.critical}</td></tr>
+      <tr><td style="color:#64748b;padding:6px 0;">Failures (24h)</td><td style="padding:6px 0;">${input.failures24h}</td></tr>
+    </table>`;
+
+  return wrapEmailHtml({
+    brand: input.brand,
+    eyebrow: "Weekly digest",
+    title: input.orgName,
+    bodyHtml,
+    cta: { label: "Open dashboard", url: input.brand.appUrl },
+  });
 }
 
 export function passwordResetPlainText(resetUrl: string): string {
   return [
     "Reset your Revenant Cloud password",
     "",
-    `Open this link (valid for 1 hour):`,
+    "Open this link (valid for 1 hour):",
     resetUrl,
     "",
     "If you did not request this, you can ignore this email.",
   ].join("\n");
 }
 
-export function passwordResetHtml(resetUrl: string): string {
-  return `<!DOCTYPE html>
-<html><body style="font-family:IBM Plex Sans,Inter,sans-serif;background:#f1f5f9;padding:32px;">
-  <div style="max-width:480px;margin:0 auto;background:#fff;border-radius:12px;padding:24px;border:1px solid #e2e8f0;">
-    <h1 style="margin:0 0 12px;font-size:20px;color:#0f172a;">Reset your password</h1>
-    <p style="color:#475569;line-height:1.5;">Click the button below to choose a new password. This link expires in one hour.</p>
-    <p style="margin:24px 0;">
-      <a href="${resetUrl}" style="background:${BRAND};color:#fff;padding:12px 20px;border-radius:8px;text-decoration:none;font-weight:600;">Reset password</a>
-    </p>
-    <p style="font-size:12px;color:#94a3b8;">If you didn&apos;t request this, ignore this email.</p>
-  </div>
-</body></html>`;
+export function passwordResetHtml(resetUrl: string, brand: EmailBrand): string {
+  return wrapEmailHtml({
+    brand,
+    eyebrow: "Account security",
+    title: "Reset your password",
+    bodyHtml: `<p style="margin:0;">Click the button below to choose a new password. This link expires in one hour.</p>
+      <p style="margin:16px 0 0;font-size:13px;color:#64748b;">If you didn&apos;t request this, you can safely ignore this email.</p>`,
+    cta: { label: "Reset password", url: resetUrl },
+  });
+}
+
+export function contactFormHtml(input: {
+  brand: EmailBrand;
+  type: "talk" | "coffee";
+  name: string;
+  email: string;
+  message?: string;
+  amountInr?: number;
+}): string {
+  const label = input.type === "coffee" ? "Buy coffee / funding" : "Talk to us";
+  const amount =
+    input.type === "coffee" && input.amountInr
+      ? `<p style="margin:0 0 12px;"><strong>Amount:</strong> ₹${input.amountInr}</p>`
+      : "";
+  const msg = input.message?.trim()
+    ? `<p style="margin:0 0 8px;"><strong>Message</strong></p><p style="margin:0;white-space:pre-wrap;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px;">${escapeHtml(input.message)}</p>`
+    : `<p style="margin:0;color:#64748b;"><em>No message provided.</em></p>`;
+
+  return wrapEmailHtml({
+    brand: input.brand,
+    eyebrow: "Marketing site",
+    title: label,
+    bodyHtml: `
+      <p style="margin:0 0 12px;"><strong>Name:</strong> ${escapeHtml(input.name)}</p>
+      <p style="margin:0 0 12px;"><strong>Email:</strong> <a href="mailto:${escapeHtml(input.email)}" style="color:#c9a227;">${escapeHtml(input.email)}</a></p>
+      ${amount}
+      ${msg}`,
+    footerNote: "Sent from the Revenant marketing site contact form.",
+  });
 }
 
 export function buildSlackJobBlocks(ctx: {
