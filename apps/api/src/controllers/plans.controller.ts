@@ -7,6 +7,7 @@ import {
 import { listSearchQuerySchema } from "../validations/pagination.schema.js";
 import type { PlansService } from "../services/plans.service.js";
 import type { YamlComposerService } from "../services/yaml-composer.service.js";
+import type { RecoveryDriftService } from "../services/recovery-drift.service.js";
 import { sendHandlerError } from "../lib/http.js";
 import {
   getValidationTemplate,
@@ -16,7 +17,8 @@ import { createAppError } from "../lib/errors.js";
 
 export function createPlansHandlers(
   plansService: PlansService,
-  yamlComposerService: YamlComposerService
+  yamlComposerService: YamlComposerService,
+  recoveryDriftService: RecoveryDriftService
 ) {
   return {
     list: async (request: FastifyRequest, reply: FastifyReply) => {
@@ -86,6 +88,18 @@ export function createPlansHandlers(
           params.data.databaseId,
           body.data
         );
+        try {
+          await recoveryDriftService.recordPlanDriftOnUpdate(
+            request.user.organizationId,
+            params.data.databaseId,
+            plan.version
+          );
+        } catch (driftErr) {
+          request.log.warn(
+            { err: driftErr },
+            "Recovery drift recording skipped after plan save"
+          );
+        }
         return { plan };
       } catch (err) {
         return sendHandlerError(

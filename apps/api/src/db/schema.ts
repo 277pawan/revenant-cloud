@@ -23,6 +23,10 @@ export const organizations = pgTable("organizations", {
     .notNull()
     .default("trialing"),
   trialEndsAt: timestamp("trial_ends_at", { withTimezone: true }),
+  razorpayCustomerId: varchar("razorpay_customer_id", { length: 64 }),
+  razorpaySubscriptionId: varchar("razorpay_subscription_id", { length: 64 }),
+  /** Razorpay: created | authenticated | active | pending | halted | cancelled */
+  razorpaySubscriptionStatus: varchar("razorpay_subscription_status", { length: 32 }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
@@ -216,6 +220,8 @@ export const jobs = pgTable("jobs", {
     onDelete: "set null",
   }),
   errorMessage: text("error_message"),
+  metadataJson: jsonb("metadata_json"),
+  correlationId: varchar("correlation_id", { length: 64 }),
   rtoSeconds: integer("rto_seconds"),
   startedAt: timestamp("started_at", { withTimezone: true }),
   finishedAt: timestamp("finished_at", { withTimezone: true }),
@@ -274,21 +280,25 @@ export const schedules = pgTable(
 );
 
 /** Signed job reports — Phase 4 evidence vault */
-export const evidenceArtifacts = pgTable("evidence_artifacts", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  organizationId: uuid("organization_id")
-    .notNull()
-    .references(() => organizations.id, { onDelete: "cascade" }),
-  jobId: uuid("job_id")
-    .notNull()
-    .references(() => jobs.id, { onDelete: "cascade" }),
-  kind: varchar("kind", { length: 50 }).notNull().default("json"),
-  storageKey: text("storage_key").notNull(),
-  sha256: varchar("sha256", { length: 64 }).notNull(),
-  byteSize: integer("byte_size").notNull(),
-  signedAt: timestamp("signed_at", { withTimezone: true }).notNull().defaultNow(),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+export const evidenceArtifacts = pgTable(
+  "evidence_artifacts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    jobId: uuid("job_id")
+      .notNull()
+      .references(() => jobs.id, { onDelete: "cascade" }),
+    kind: varchar("kind", { length: 50 }).notNull().default("json"),
+    storageKey: text("storage_key").notNull(),
+    sha256: varchar("sha256", { length: 64 }).notNull(),
+    byteSize: integer("byte_size").notNull(),
+    signedAt: timestamp("signed_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex("evidence_artifacts_job_id_kind_idx").on(table.jobId, table.kind)]
+);
 
 /** Outbound webhook endpoints per org */
 export const webhookEndpoints = pgTable("webhook_endpoints", {
@@ -333,6 +343,30 @@ export const webhookDeliveries = pgTable("webhook_deliveries", {
   attempts: integer("attempts").notNull().default(0),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+/** Org-scoped personal access tokens for API automation */
+export const apiTokens = pgTable(
+  "api_tokens",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    createdByUserId: uuid("created_by_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    name: varchar("name", { length: 255 }).notNull(),
+    tokenPrefix: varchar("token_prefix", { length: 20 }).notNull(),
+    tokenHash: varchar("token_hash", { length: 64 }).notNull(),
+    role: varchar("role", { length: 50 }).notNull(),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("api_tokens_token_hash_idx").on(table.tokenHash),
+  ]
+);
 
 /** Append-only audit trail */
 export const auditEvents = pgTable("audit_events", {
@@ -416,6 +450,126 @@ export const siteTrafficCounters = pgTable("site_traffic_counters", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+/** Recovery contract per database workflow (maps to "system" in product docs). */
+export const recoveryContracts = pgTable(
+  "recovery_contracts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    databaseId: uuid("database_id")
+      .notNull()
+      .references(() => databases.id, { onDelete: "cascade" }),
+    version: integer("version").notNull().default(1),
+    definitionJson: jsonb("definition_json").notNull(),
+    rtoSeconds: integer("rto_seconds"),
+    rpoSeconds: integer("rpo_seconds"),
+    status: varchar("status", { length: 50 }).notNull().default("active"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex("recovery_contracts_database_id_idx").on(table.databaseId)]
+);
+
+/** Snapshot of recoverable state after a successful drill. */
+export const recoveryFingerprints = pgTable("recovery_fingerprints", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  organizationId: uuid("organization_id")
+    .notNull()
+    .references(() => organizations.id, { onDelete: "cascade" }),
+  databaseId: uuid("database_id")
+    .notNull()
+    .references(() => databases.id, { onDelete: "cascade" }),
+  jobId: uuid("job_id").references(() => jobs.id, { onDelete: "set null" }),
+  fingerprintJson: jsonb("fingerprint_json").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** Phase 7 — recovery point challenges (older backup / alternate snapshot tests). */
+export const recoveryChallenges = pgTable("recovery_challenges", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  organizationId: uuid("organization_id")
+    .notNull()
+    .references(() => organizations.id, { onDelete: "cascade" }),
+  databaseId: uuid("database_id")
+    .notNull()
+    .references(() => databases.id, { onDelete: "cascade" }),
+  name: varchar("name", { length: 255 }).notNull(),
+  strategy: varchar("strategy", { length: 50 }).notNull().default("latest"),
+  daysAgo: integer("days_ago").notNull().default(0),
+  enabled: varchar("enabled", { length: 10 }).notNull().default("true"),
+  lastRunAt: timestamp("last_run_at", { withTimezone: true }),
+  lastJobId: uuid("last_job_id").references(() => jobs.id, { onDelete: "set null" }),
+  lastStatus: varchar("last_status", { length: 50 }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** Phase 8 — readiness score history per verified drill. */
+export const readinessSnapshots = pgTable("readiness_snapshots", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  organizationId: uuid("organization_id")
+    .notNull()
+    .references(() => organizations.id, { onDelete: "cascade" }),
+  databaseId: uuid("database_id")
+    .notNull()
+    .references(() => databases.id, { onDelete: "cascade" }),
+  jobId: uuid("job_id")
+    .notNull()
+    .references(() => jobs.id, { onDelete: "cascade" }),
+  score: integer("score").notNull(),
+  status: varchar("status", { length: 50 }).notNull(),
+  rtoActualSeconds: integer("rto_actual_seconds"),
+  rpoObservedSeconds: integer("rpo_observed_seconds"),
+  recordedAt: timestamp("recorded_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** Razorpay checkout orders — idempotent payment verification. */
+export const billingOrders = pgTable("billing_orders", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  organizationId: uuid("organization_id")
+    .notNull()
+    .references(() => organizations.id, { onDelete: "cascade" }),
+  razorpayOrderId: varchar("razorpay_order_id", { length: 64 }),
+  razorpaySubscriptionId: varchar("razorpay_subscription_id", { length: 64 }),
+  amountPaise: integer("amount_paise").notNull(),
+  currency: varchar("currency", { length: 8 }).notNull().default("INR"),
+  plan: varchar("plan", { length: 32 }).notNull(),
+  purpose: varchar("purpose", { length: 64 }).notNull().default("autopay_setup"),
+  status: varchar("status", { length: 32 }).notNull().default("created"),
+  razorpayPaymentId: varchar("razorpay_payment_id", { length: 64 }),
+  createdByUserId: uuid("created_by_user_id").references(() => users.id, {
+    onDelete: "set null",
+  }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  paidAt: timestamp("paid_at", { withTimezone: true }),
+});
+
+/** Detected recovery-impacting changes between fingerprints. */
+export const recoveryDriftEvents = pgTable("recovery_drift_events", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  organizationId: uuid("organization_id")
+    .notNull()
+    .references(() => organizations.id, { onDelete: "cascade" }),
+  databaseId: uuid("database_id")
+    .notNull()
+    .references(() => databases.id, { onDelete: "cascade" }),
+  fromFingerprintId: uuid("from_fingerprint_id").references(
+    () => recoveryFingerprints.id,
+    { onDelete: "set null" }
+  ),
+  toFingerprintId: uuid("to_fingerprint_id").references(
+    () => recoveryFingerprints.id,
+    { onDelete: "set null" }
+  ),
+  severity: varchar("severity", { length: 50 }).notNull(),
+  changeType: varchar("change_type", { length: 100 }).notNull(),
+  description: text("description").notNull(),
+  status: varchar("status", { length: 50 }).notNull().default("open"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 /** Detailed engagement events (visits, hero, login, register, page_view) */
 export const siteEngagementEvents = pgTable("site_engagement_events", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -441,6 +595,13 @@ export type JobResult = typeof jobResults.$inferSelect;
 export type Runner = typeof runners.$inferSelect;
 export type Schedule = typeof schedules.$inferSelect;
 export type EvidenceArtifact = typeof evidenceArtifacts.$inferSelect;
+export type ApiToken = typeof apiTokens.$inferSelect;
 export type WebhookEndpoint = typeof webhookEndpoints.$inferSelect;
 export type WebhookDelivery = typeof webhookDeliveries.$inferSelect;
 export type AuditEvent = typeof auditEvents.$inferSelect;
+export type RecoveryContract = typeof recoveryContracts.$inferSelect;
+export type RecoveryFingerprint = typeof recoveryFingerprints.$inferSelect;
+export type RecoveryDriftEvent = typeof recoveryDriftEvents.$inferSelect;
+export type RecoveryChallenge = typeof recoveryChallenges.$inferSelect;
+export type ReadinessSnapshot = typeof readinessSnapshots.$inferSelect;
+export type BillingOrder = typeof billingOrders.$inferSelect;

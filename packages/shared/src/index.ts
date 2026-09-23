@@ -98,12 +98,17 @@ export interface AuthUser {
   subscriptionStatus?: SubscriptionStatus;
   trialEndsAt?: string | null;
   subscriptionActive?: boolean;
+  /** True after ₹1 Razorpay autopay setup on the marketing site */
+  autopaySetup?: boolean;
 }
 
 export * from "./plans.js";
 export * from "./billing.js";
 export * from "./auth.js";
 export * from "./public.js";
+export * from "./recovery-contract.js";
+export * from "./recovery-readiness.js";
+export * from "./billing.js";
 
 /** Fleet health for dashboard — why someone opens the app on Tuesday */
 export type FleetHealthStatus = "healthy" | "warning" | "critical" | "unknown";
@@ -143,6 +148,41 @@ export interface DashboardRtoTrendPoint {
 
 export interface DashboardRtoTrend {
   days: DashboardRtoTrendPoint[];
+}
+
+export interface DashboardRpoTrendPoint {
+  date: string;
+  maxRpoSeconds: number | null;
+  sampleCount: number;
+}
+
+export interface DashboardRpoTrend {
+  days: DashboardRpoTrendPoint[];
+}
+
+export type RecoveryChallengeStrategy = "latest" | "days_ago";
+
+export interface RecoveryChallengeResource {
+  id: string;
+  databaseId: string;
+  name: string;
+  strategy: RecoveryChallengeStrategy;
+  daysAgo: number;
+  enabled: boolean;
+  lastRunAt: string | null;
+  lastJobId: string | null;
+  lastStatus: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ReadinessHistoryPoint {
+  recordedAt: string;
+  score: number;
+  status: string;
+  rtoActualSeconds: number | null;
+  rpoObservedSeconds: number | null;
+  jobId: string;
 }
 
 export interface ValidationPlanTemplateResource {
@@ -363,7 +403,7 @@ export type JobStatus =
   | "error"
   | "cancelled";
 
-export type JobTrigger = "manual" | "schedule" | "full-drill";
+export type JobTrigger = "manual" | "schedule" | "full-drill" | "challenge";
 
 /** How the job was executed — stub is never real proof */
 export type JobExecutionMode = "stub" | "agent" | "ci";
@@ -441,6 +481,8 @@ export interface PlanServiceResource {
   databaseId: string;
   databaseName: string;
   planName: string;
+  planVersion: number;
+  planUpdatedAt: string;
   recoveryMode: RecoveryMode | string;
   runner: PlanServiceRunner | null;
   jobs: JobResource[];
@@ -570,4 +612,52 @@ export interface AuditEventResource {
   resourceId: string;
   metadata: Record<string, unknown> | null;
   createdAt: string;
+}
+
+export interface RecoveryReadinessResource {
+  databaseId: string;
+  databaseName: string;
+  contractVersion: number;
+  readiness: import("./recovery-readiness.js").RecoveryReadinessResult;
+  providers: import("./recovery-contract.js").RecoveryProviderDefinition[];
+}
+
+export interface RecoveryReadinessResponse {
+  readiness: RecoveryReadinessResource;
+}
+
+export interface OrganizationSettingsResource {
+  id: string;
+  name: string;
+  plan: OrganizationPlan;
+  subscriptionStatus: SubscriptionStatus;
+  trialEndsAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface UpdateOrganizationRequest {
+  name: string;
+}
+
+export interface ApiTokenResource {
+  id: string;
+  name: string;
+  tokenPrefix: string;
+  role: UserRole;
+  createdByEmail: string;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+  createdAt: string;
+}
+
+export interface CreateApiTokenRequest {
+  name: string;
+  role: UserRole;
+}
+
+export interface CreateApiTokenResponse {
+  token: ApiTokenResource;
+  /** Shown once at creation — never stored or returned again */
+  secret: string;
 }

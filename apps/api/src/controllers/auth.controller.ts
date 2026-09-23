@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import { randomBytes } from "node:crypto";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { AuthUser, OAuthProviderId, OrganizationPlan } from "@revenant/shared";
+import { hasAutopaySetup } from "../lib/billing-access.js";
 import { isSubscriptionActive } from "../lib/org-subscription.js";
 import {
   acceptInviteSchema,
@@ -184,6 +185,11 @@ export function createAuthHandlers(
       return authService.logout(reply);
     },
 
+    /** Re-issue JWT for cookie sessions (marketing → cloud handoff). */
+    sessionToken: async (request: FastifyRequest, reply: FastifyReply) => {
+      return authService.issueSession(reply, request.user);
+    },
+
     me: async (request: FastifyRequest) => {
       const [org] = await request.server.db
         .select({
@@ -201,6 +207,11 @@ export function createAuthHandlers(
         trialEndsAt: org?.trialEndsAt ?? null,
       };
 
+      const autopaySetup = await hasAutopaySetup(
+        request.server.db,
+        request.user.organizationId
+      );
+
       return {
         user: {
           ...request.user,
@@ -208,6 +219,7 @@ export function createAuthHandlers(
           subscriptionStatus: billing.subscriptionStatus as AuthUser["subscriptionStatus"],
           trialEndsAt: org?.trialEndsAt?.toISOString() ?? null,
           subscriptionActive: isSubscriptionActive(billing),
+          autopaySetup,
         },
       };
     },

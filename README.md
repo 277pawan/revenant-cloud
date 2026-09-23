@@ -45,6 +45,29 @@ See [RUNNERS.md](./RUNNERS.md).
 
 Drizzle does **not** auto-generate down/revert SQL. Locally use `db:reset`. In prod, write a new forward migration that undoes the change.
 
+### Migrations — do this after every pull (fixes 500 on billing / new features)
+
+If the API returns **500** on `/billing/create-order` or errors like `column … does not exist` / `relation … does not exist`, the database is behind the code.
+
+```bash
+cd revenant-cloud
+npm run db:migrate
+# restart API: npm run dev   (or npm start)
+```
+
+**Checklist when adding a migration SQL file:**
+
+1. Put the file in `apps/api/drizzle/` (e.g. `0020_billing_orders.sql`).
+2. **Register it** in `apps/api/drizzle/meta/_journal.json` — Drizzle skips files not listed in the journal (a common “migration ran but table missing” bug).
+3. Run `npm run db:migrate` from `revenant-cloud` (loads `DATABASE_URL` from `.env`).
+4. Confirm DB name is `revenant_cloud` (not `revenant`) in `.env`.
+
+Verify billing table:
+
+```bash
+psql "$DATABASE_URL" -c '\d billing_orders'
+```
+
 ## Frontend (separate repo)
 
 ```bash

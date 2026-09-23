@@ -13,5 +13,6 @@ export async function authRoutes(app: FastifyInstance, handlers: AuthHandlers) {
   app.post("/auth/reset-password", handlers.resetPassword);
   app.post("/auth/login", handlers.login);
   app.post("/auth/logout", handlers.logout);
+  app.post("/auth/session-token", { preHandler: requireAuth }, handlers.sessionToken);
   app.get("/me", { preHandler: requireAuth }, handlers.me);
 }

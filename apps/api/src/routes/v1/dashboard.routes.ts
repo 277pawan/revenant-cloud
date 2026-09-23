@@ -17,4 +17,10 @@ export async function dashboardRoutes(
     { preHandler: [requireAuth, requirePermission("databases:read")] },
     handlers.rtoTrends
   );
+
+  app.get(
+    "/dashboard/rpo-trends",
+    { preHandler: [requireAuth, requirePermission("databases:read")] },
+    handlers.rpoTrends
+  );
 }

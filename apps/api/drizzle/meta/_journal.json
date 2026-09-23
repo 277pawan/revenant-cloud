@@ -113,6 +113,48 @@
       "when": 1789069200000,
       "tag": "0015_site_engagement",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1789070000000,
+      "tag": "0016_recovery_readiness",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1789070800000,
+      "tag": "0017_evidence_artifacts_job_kind",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1789071600000,
+      "tag": "0018_api_tokens",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1789072400000,
+      "tag": "0019_track_a_completion",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1789073200000,
+      "tag": "0020_billing_orders",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1789074000000,
+      "tag": "0021_razorpay_subscription",
+      "breakpoints": true
     }
   ]
 }

@@ -8,8 +8,8 @@ Edit **one file** for backend + public API:
 
 ```ts
 export const STARTER_TRIAL_DAYS = 30;
-export const STARTER_PRICE_INR = 999;
-export const PRO_PRICE_INR = 4999;
+export const STARTER_PRICE_INR = 499;
+export const PRO_PRICE_INR = 1499;
 ```
 
 After changes: `npm run build -w @revenant/shared` (or `npm run build` at repo root).
@@ -88,7 +88,7 @@ npm run dev
 ### 2. Plan + trial
 
 - [ ] Register → `GET /api/v1/billing/subscription` shows `trialing`, 30 days, `workflows: 0/1`
-- [ ] `GET /api/v1/public/catalog` shows `priceInr: 999` and `4999` from shared file
+- [ ] `GET /api/v1/public/catalog` shows `priceInr: 499` and `1499` from shared file
 
 ### 3. Starter limits
 

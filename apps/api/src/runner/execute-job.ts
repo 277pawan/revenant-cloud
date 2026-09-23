@@ -4,6 +4,11 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { access, constants } from "node:fs/promises";
 import type { AwsRecoveryConfig, RecoveryMode, RunnerAwsCredentials } from "@revenant/shared";
+import {
+  collectHttpHealthSpecs,
+  runHttpHealthChecks,
+  stripHttpHealthFromChecksBlock,
+} from "./http-health-checks.js";
 
 export type ClaimedPayload = {
   job: { id: string; databaseName: string };
@@ -19,6 +24,8 @@ export type ClaimedPayload = {
   recovery: AwsRecoveryConfig | null;
   awsCredentials: RunnerAwsCredentials | null;
   planYaml: string | null;
+  /** Injected from recovery contract when required.healthcheck is true */
+  contractHealthcheck?: { url: string } | null;
   fullDrill?: boolean;
 };
 
@@ -137,7 +144,9 @@ function extractChecksBlock(planYaml: string | null): string {
       "$1$2expect_tables:"
     );
   }
-  return checksBlock;
+
+  // http_health runs in Node (see runHttpHealthChecks) — older revenant CLI builds reject it.
+  return stripHttpHealthFromChecksBlock(checksBlock);
 }
 
 /** Build CLI config for direct Postgres connection. */
@@ -332,6 +341,10 @@ async function runWithCli(
   }
 
   const planName = claimed.job.databaseName || "cloud-job";
+  const httpSpecs = collectHttpHealthSpecs(
+    claimed.planYaml,
+    claimed.contractHealthcheck
+  );
   const yaml = awsMode && claimed.recovery
     ? buildAwsCliConfigYaml(claimed.planYaml, planName, claimed.recovery)
     : buildDirectCliConfigYaml(claimed.planYaml, planName);
@@ -404,10 +417,15 @@ async function runWithCli(
     }
     results.push(...verifyResults);
 
+    if (httpSpecs.length > 0) {
+      results.push(...(await runHttpHealthChecks(httpSpecs)));
+    }
+
     const verifyFailed =
       code !== 0 ||
       report.status?.toUpperCase() === "FAIL" ||
-      verifyResults.some((r) => r.status === "fail");
+      verifyResults.some((r) => r.status === "fail") ||
+      results.some((r) => r.checkType === "http_health" && r.status === "fail");
 
     if (fullDrill) {
       const reapStarted = Date.now();

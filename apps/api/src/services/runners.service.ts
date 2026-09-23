@@ -10,6 +10,8 @@ export type PlanServiceResource = {
   databaseId: string;
   databaseName: string;
   planName: string;
+  planVersion: number;
+  planUpdatedAt: string;
   recoveryMode: string;
   runner: {
     id: string;
@@ -83,6 +85,8 @@ export function createRunnersService(db: Database) {
           databaseId: row.plan.databaseId,
           databaseName: row.database.name,
           planName: row.plan.name,
+          planVersion: row.plan.version,
+          planUpdatedAt: row.plan.updatedAt.toISOString(),
           recoveryMode: row.database.recoveryMode ?? "direct",
           runner: row.runner
             ? {

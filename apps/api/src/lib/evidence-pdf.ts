@@ -1,5 +1,13 @@
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import PDFDocument from "pdfkit";
 import type { JobDetailResource } from "@revenant/shared";
+
+const VERIFY_LOGO_PATH = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "../../assets/revenant_verify_logo.png"
+);
+const LOGO_ASPECT = 2170 / 725;
 
 const NAVY = "#0b1f33";
 const INK = "#0f172a";
@@ -66,31 +74,21 @@ export function renderEvidencePdf(input: EvidencePdfInput): Promise<Buffer> {
 
     doc.rect(0, 0, pageW, 92).fill(NAVY);
 
-    doc
-      .circle(left + 18, 46, 18)
-      .fill("#ffffff");
-    doc
-      .font("Helvetica-Bold")
-      .fontSize(18)
-      .fillColor(NAVY)
-      .text("R", left, 36, { width: 36, align: "center" });
+    const logoHeight = 52;
+    const logoWidth = logoHeight * LOGO_ASPECT;
+    doc.image(VERIFY_LOGO_PATH, left, 24, { fit: [logoWidth, logoHeight] });
 
-    doc
-      .fillColor("#ffffff")
-      .font("Helvetica-Bold")
-      .fontSize(18)
-      .text("REVENANT", left + 48, 28);
     doc
       .font("Helvetica")
       .fontSize(10)
       .fillColor("#94a3b8")
-      .text("Restore evidence certificate", left + 48, 52);
+      .text("Restore evidence certificate", left, 72, { width: logoWidth + 40 });
 
     doc
       .font("Helvetica-Bold")
       .fontSize(11)
       .fillColor(accent)
-      .text(verdict, left, 36, { width: contentW, align: "right" });
+      .text(verdict, left, 38, { width: contentW, align: "right" });
 
     doc.y = 116;
     doc.fillColor(INK).font("Helvetica-Bold").fontSize(20);
@@ -231,7 +229,7 @@ export function renderEvidencePdf(input: EvidencePdfInput): Promise<Buffer> {
       doc.y,
       { width: contentW }
     );
-    doc.fillColor(BRAND).text("revenant", left, doc.y + 14);
+    doc.image(VERIFY_LOGO_PATH, left, doc.y + 8, { fit: [132, 40] });
 
     doc.end();
   });

@@ -20,6 +20,16 @@ import { createWebhooksService } from "./services/webhooks.service.js";
 import { createAuditService } from "./services/audit.service.js";
 import { createAuthHandlers } from "./controllers/auth.controller.js";
 import { createDatabasesHandlers } from "./controllers/databases.controller.js";
+import { createRecoveryContractService } from "./services/recovery-contract.service.js";
+import { createRecoveryReadinessService } from "./services/recovery-readiness.service.js";
+import { createRecoveryFingerprintService } from "./services/recovery-fingerprint.service.js";
+import { createRecoveryDriftService } from "./services/recovery-drift.service.js";
+import { createRecoveryPassportService } from "./services/recovery-passport.service.js";
+import { createRecoveryChallengesService } from "./services/recovery-challenges.service.js";
+import { createReadinessSnapshotService } from "./services/readiness-snapshot.service.js";
+import { createRecoveryPostProcessService } from "./services/recovery-post-process.service.js";
+import { createRecoveryHandlers } from "./controllers/recovery.controller.js";
+import { generateCorrelationId, recordRequest } from "./lib/observability.js";
 import { createPlansHandlers } from "./controllers/plans.controller.js";
 import { createTeamHandlers } from "./controllers/team.controller.js";
 import { createJobsHandlers } from "./controllers/jobs.controller.js";
@@ -35,6 +45,8 @@ import { createContactService } from "./services/contact.service.js";
 import { createEngagementHandlers } from "./controllers/engagement.controller.js";
 import { createEngagementService } from "./services/engagement.service.js";
 import { createBillingHandlers } from "./controllers/billing.controller.js";
+import { createSettingsHandlers } from "./controllers/settings.controller.js";
+import { createSettingsService } from "./services/settings.service.js";
 import { createDashboardService } from "./services/dashboard.service.js";
 import { createBillingService } from "./services/billing.service.js";
 import { SESSION_COOKIE } from "./lib/session.js";
@@ -88,8 +100,42 @@ export async function buildApp(env: Env) {
   const auditService = createAuditService(db);
   const evidenceService = createEvidenceService(db, env.EVIDENCE_DIR);
   const webhooksService = createWebhooksService(db, env.MASTER_KEY, env);
+  const recoveryContractService = createRecoveryContractService(db);
+  const recoveryReadinessService = createRecoveryReadinessService(db);
+  const recoveryFingerprintService = createRecoveryFingerprintService(db);
+  const recoveryDriftService = createRecoveryDriftService(db);
+  const recoveryPassportService = createRecoveryPassportService(
+    db,
+    env.EVIDENCE_DIR,
+    env.MASTER_KEY
+  );
+  const readinessSnapshotService = createReadinessSnapshotService(
+    db,
+    recoveryReadinessService
+  );
+  const recoveryChallengesService = createRecoveryChallengesService(db);
+  const settingsService = createSettingsService(db);
+  const recoveryPostProcessService = createRecoveryPostProcessService(db, {
+    fingerprintService: recoveryFingerprintService,
+    driftService: recoveryDriftService,
+    passportService: recoveryPassportService,
+    snapshotService: readinessSnapshotService,
+  });
 
-  await rootHealthRoutes(app);
+  app.addHook("onRequest", async (request) => {
+    const incoming = request.headers["x-correlation-id"];
+    const correlationId =
+      typeof incoming === "string" && incoming.trim()
+        ? incoming.trim()
+        : generateCorrelationId();
+    request.headers["x-correlation-id"] = correlationId;
+  });
+
+  app.addHook("onResponse", async (_request, reply) => {
+    recordRequest(reply.statusCode);
+  });
+
+  await rootHealthRoutes(app, db);
   const authProvidersService = createAuthProvidersService(db, env);
   await registerV1Routes(app, {
     authHandlers: createAuthHandlers(
@@ -98,18 +144,34 @@ export async function buildApp(env: Env) {
       env
     ),
     databasesHandlers: createDatabasesHandlers(
-      createDatabasesService(db, env.MASTER_KEY)
+      createDatabasesService(db, env.MASTER_KEY),
+      recoveryContractService
     ),
+    recoveryHandlers: createRecoveryHandlers({
+      contractService: recoveryContractService,
+      readinessService: recoveryReadinessService,
+      driftService: recoveryDriftService,
+      passportService: recoveryPassportService,
+      challengesService: recoveryChallengesService,
+      snapshotService: readinessSnapshotService,
+      jobsService,
+      organizationsLookup: async (orgId) => {
+        const org = await settingsService.getOrganization(orgId);
+        return org.name;
+      },
+    }),
     plansHandlers: createPlansHandlers(
       createPlansService(db),
-      createYamlComposerService(env)
+      createYamlComposerService(env),
+      recoveryDriftService
     ),
     teamHandlers: createTeamHandlers(createTeamService(db, env)),
     jobsHandlers: createJobsHandlers(
       jobsService,
       evidenceService,
       webhooksService,
-      auditService
+      auditService,
+      recoveryPostProcessService
     ),
     runnersHandlers: createRunnersHandlers(createRunnersService(db)),
     schedulesHandlers: createSchedulesHandlers(
@@ -119,11 +181,18 @@ export async function buildApp(env: Env) {
     evidenceHandlers: createEvidenceHandlers(evidenceService),
     webhooksHandlers: createWebhooksHandlers(webhooksService, auditService),
     auditHandlers: createAuditHandlers(auditService),
-    dashboardHandlers: createDashboardHandlers(createDashboardService(db)),
+    dashboardHandlers: createDashboardHandlers(
+      createDashboardService(db),
+      readinessSnapshotService
+    ),
     publicHandlers: createPublicHandlers(env, authProvidersService),
     contactHandlers: createContactHandlers(createContactService(db, env)),
     engagementHandlers: createEngagementHandlers(createEngagementService(db)),
-    billingHandlers: createBillingHandlers(createBillingService(db)),
+    billingHandlers: createBillingHandlers(
+      createBillingService(db, env),
+      auditService
+    ),
+    settingsHandlers: createSettingsHandlers(settingsService, auditService),
     env,
     db,
     jobsService,

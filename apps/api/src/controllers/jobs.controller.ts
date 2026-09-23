@@ -3,12 +3,13 @@ import {
   completeJobSchema,
   createJobSchema,
   jobIdParamSchema,
+  listJobsQuerySchema,
 } from "../validations/jobs.schema.js";
-import { paginationQuerySchema } from "../validations/pagination.schema.js";
 import type { JobsService } from "../services/jobs.service.js";
 import type { EvidenceService } from "../services/evidence.service.js";
 import type { WebhooksService } from "../services/webhooks.service.js";
 import type { AuditService } from "../services/audit.service.js";
+import type { RecoveryPostProcessService } from "../services/recovery-post-process.service.js";
 import { sendHandlerError } from "../lib/http.js";
 import type { EvidenceArtifactResource } from "@revenant/shared";
 
@@ -46,11 +47,12 @@ export function createJobsHandlers(
   jobsService: JobsService,
   evidenceService: EvidenceService,
   webhooksService: WebhooksService,
-  auditService: AuditService
+  auditService: AuditService,
+  recoveryPostProcessService: RecoveryPostProcessService
 ) {
   return {
     list: async (request: FastifyRequest, reply: FastifyReply) => {
-      const query = paginationQuerySchema.safeParse(request.query);
+      const query = listJobsQuerySchema.safeParse(request.query);
       if (!query.success) {
         return reply
           .status(400)
@@ -166,6 +168,7 @@ export function createJobsHandlers(
 
         const detail = await jobsService.getById(orgId, job.id);
         await evidenceService.archiveFromJob(orgId, detail);
+        await recoveryPostProcessService.onJobCompleted(orgId, detail);
         await webhooksService.dispatchForJob(orgId, detail);
 
         return { job };

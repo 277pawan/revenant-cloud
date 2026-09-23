@@ -1,0 +1,60 @@
+# Deploy API to Cloud Run on merge to main.
+#
+# One-time GitHub repo secret (Settings → Secrets → Actions):
+#   GCP_SA_KEY — JSON key for a service account with:
+#     roles/run.admin, roles/cloudbuild.builds.editor, roles/iam.serviceAccountUser
+#
+# Env vars (DATABASE_URL, JWT_SECRET, Razorpay, etc.) stay on the Cloud Run
+# service — this workflow only ships new code. Migrations are still manual:
+#   DATABASE_URL='...' npm run db:migrate
+
+name: Deploy API to Cloud Run
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: cloud-run-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    needs: []
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - run: npm ci && npm run build && npm run typecheck && npm test -w @revenant/api
+
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - id: deploy
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          project_id: revenant-cloud
+          service: revenant-api
+          region: asia-south1
+          source: .
+          flags: >-
+            --allow-unauthenticated
+            --port=8080
+            --min-instances=0
+            --max-instances=3
+            --memory=2Gi
+            --cpu=2
+            --timeout=3600
+            --concurrency=20
+
+      - name: Smoke test /health
+        run: curl -fsS "${{ steps.deploy.outputs.url }}/health"

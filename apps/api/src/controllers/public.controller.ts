@@ -5,6 +5,7 @@ import {
 } from "@revenant/shared";
 import type { AuthProvidersService } from "../services/auth-providers.service.js";
 import type { Env } from "../config/env.js";
+import { isRazorpayConfigured } from "../lib/razorpay.js";
 import { SESSION_COOKIE } from "../lib/session.js";
 
 export function createPublicHandlers(
@@ -25,7 +26,10 @@ export function createPublicHandlers(
         plans: listCatalogPlans(),
         billing: {
           starterTrialDays: STARTER_TRIAL_DAYS,
-          razorpayReady: false,
+          razorpayReady: isRazorpayConfigured(
+            env.RAZORPAY_KEY_ID,
+            env.RAZORPAY_KEY_SECRET
+          ),
         },
         auth: {
           ...auth,

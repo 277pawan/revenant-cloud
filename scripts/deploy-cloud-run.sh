@@ -56,8 +56,10 @@ gcloud run deploy "$SERVICE" \
   --port 8080 \
   --min-instances=0 \
   --max-instances=3 \
-  --memory=512Mi \
-  --cpu=1
+  --memory=2Gi \
+  --cpu=2 \
+  --timeout=3600 \
+  --concurrency=20
 
 URL="$(gcloud run services describe "$SERVICE" --region "$REGION" --format='value(status.url)')"
 echo ""
@@ -74,3 +76,6 @@ echo "  VITE_API_URL=$URL"
 echo ""
 echo "Run migrations against HOSTED Postgres (not localhost):"
 echo "  DATABASE_URL='postgresql://...' npm run db:migrate"
+echo ""
+echo "CI/CD: push to main also deploys via .github/workflows/cloud-run-deploy.yml"
+echo "  (requires GitHub secret GCP_SA_KEY — see workflow file header)"

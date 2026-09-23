@@ -7,6 +7,7 @@ import type {
   SubscriptionStatus,
   UserRole,
 } from "@revenant/shared";
+import { hasAutopaySetup } from "../lib/billing-access.js";
 import {
   isSubscriptionActive,
   trialEndsAtFromNow,
@@ -64,7 +65,8 @@ type OrgRow = {
 
 function toAuthUser(
   user: { id: string; email: string; role: string },
-  org: OrgRow
+  org: OrgRow,
+  autopaySetup = false
 ): AuthUser {
   const billing = {
     plan: org.plan ?? "starter",
@@ -81,7 +83,17 @@ function toAuthUser(
     subscriptionStatus: billing.subscriptionStatus as SubscriptionStatus,
     trialEndsAt: org.trialEndsAt?.toISOString() ?? null,
     subscriptionActive: isSubscriptionActive(billing),
+    autopaySetup,
   };
+}
+
+async function buildAuthUser(
+  db: Database,
+  user: { id: string; email: string; role: string },
+  org: OrgRow
+): Promise<AuthUser> {
+  const autopaySetup = await hasAutopaySetup(db, org.id);
+  return toAuthUser(user, org, autopaySetup);
 }
 
 export function createAuthService(db: Database, env: Env) {
@@ -120,7 +132,7 @@ export function createAuthService(db: Database, env: Env) {
           })
           .returning();
 
-        return { token: "", user: toAuthUser(user, org) };
+        return { token: "", user: await buildAuthUser(db, user, org) };
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : "";
         if (message.includes("unique") || message.includes("duplicate")) {
@@ -186,7 +198,7 @@ export function createAuthService(db: Database, env: Env) {
           .set({ acceptedAt: now })
           .where(eq(organizationInvites.id, row.invite.id));
 
-        return { token: "", user: toAuthUser(user, row.org) };
+        return { token: "", user: await buildAuthUser(db, user, row.org) };
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : "";
         if (message.includes("unique") || message.includes("duplicate")) {
@@ -314,7 +326,7 @@ export function createAuthService(db: Database, env: Env) {
 
       const linked = byProvider[0];
       if (linked) {
-        return toAuthUser(linked.user, linked.org);
+        return buildAuthUser(db, linked.user, linked.org);
       }
       return null;
     },
@@ -383,7 +395,7 @@ export function createAuthService(db: Database, env: Env) {
             .where(eq(organizationInvites.id, row.invite.id));
 
           await this.linkAuthProvider(user.id, profile);
-          return toAuthUser(user, row.org);
+          return buildAuthUser(db, user, row.org);
         } catch (err: unknown) {
           const message = err instanceof Error ? err.message : "";
           if (message.includes("unique") || message.includes("duplicate")) {
@@ -407,7 +419,7 @@ export function createAuthService(db: Database, env: Env) {
       const emailRow = byEmail[0];
       if (emailRow) {
         await this.linkAuthProvider(emailRow.user.id, profile);
-        return toAuthUser(emailRow.user, emailRow.org);
+        return buildAuthUser(db, emailRow.user, emailRow.org);
       }
 
       if (!env.ALLOW_OPEN_REGISTRATION) {
@@ -440,7 +452,7 @@ export function createAuthService(db: Database, env: Env) {
           .returning();
 
         await this.linkAuthProvider(user.id, profile);
-        return toAuthUser(user, org);
+        return buildAuthUser(db, user, org);
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : "";
         if (message.includes("unique") || message.includes("duplicate")) {
@@ -479,7 +491,7 @@ export function createAuthService(db: Database, env: Env) {
         throw createAppError(401, "Invalid email or password", "INVALID_CREDENTIALS");
       }
 
-      return toAuthUser(row.user, row.org);
+      return buildAuthUser(db, row.user, row.org);
     },
 
     async issueSession(

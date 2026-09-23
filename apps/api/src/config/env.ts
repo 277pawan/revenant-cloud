@@ -102,6 +102,20 @@ const envSchema = z.object({
   MISTRAL_MODEL: z.string().optional(),
   /** Inbox for marketing contact / buy-coffee form submissions */
   CONTACT_NOTIFY_EMAIL: z.string().email().optional(),
+  /** Razorpay Standard Checkout — secret must never reach the browser */
+  RAZORPAY_KEY_ID: z.string().optional(),
+  RAZORPAY_KEY_SECRET: z.string().optional(),
+  /** Razorpay Subscriptions — ₹499/mo Starter plan id from Dashboard → Subscriptions → Plans */
+  RAZORPAY_STARTER_PLAN_ID: z.string().optional(),
+  /** Razorpay Subscriptions — ₹1,499/mo Pro plan id */
+  RAZORPAY_PRO_PLAN_ID: z.string().optional(),
+  /** Razorpay webhook signing secret (Dashboard → Webhooks) */
+  RAZORPAY_WEBHOOK_SECRET: z.string().optional(),
+  /** Dev only: auto-create Starter plan if RAZORPAY_STARTER_PLAN_ID is unset */
+  RAZORPAY_AUTO_CREATE_PLAN: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
 });
 
 export type Env = z.infer<typeof envSchema>;

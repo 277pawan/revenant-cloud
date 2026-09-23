@@ -15,11 +15,13 @@ export type CatalogPlanId = "developer" | OrganizationPlan;
 
 export type SubscriptionStatus = "trialing" | "active" | "past_due" | "canceled";
 
+export type PlanLimitResource = "databases" | "schedules" | "teamMembers" | "integrations";
+
 // ─── Pricing (edit amounts here only) ─────────────────────────────────────
 
 export const STARTER_TRIAL_DAYS = 30;
-export const STARTER_PRICE_INR = 999;
-export const PRO_PRICE_INR = 4999;
+export const STARTER_PRICE_INR = 499;
+export const PRO_PRICE_INR = 1499;
 
 export function formatPriceInr(amount: number): string {
   return `₹${amount.toLocaleString("en-IN")} / month`;

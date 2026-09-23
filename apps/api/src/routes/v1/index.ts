@@ -14,6 +14,8 @@ import type { PublicHandlers } from "../../controllers/public.controller.js";
 import type { ContactHandlers } from "../../controllers/contact.controller.js";
 import type { EngagementHandlers } from "../../controllers/engagement.controller.js";
 import type { BillingHandlers } from "../../controllers/billing.controller.js";
+import type { RecoveryHandlers } from "../../controllers/recovery.controller.js";
+import type { SettingsHandlers } from "../../controllers/settings.controller.js";
 import type { Env } from "../../config/env.js";
 import type { Database } from "../../db/index.js";
 import type { JobsService } from "../../services/jobs.service.js";
@@ -32,6 +34,8 @@ import { dashboardRoutes } from "./dashboard.routes.js";
 import { publicRoutes } from "./public.routes.js";
 import { billingRoutes } from "./billing.routes.js";
 import { engagementRoutes } from "./engagement.routes.js";
+import { recoveryRoutes } from "./recovery.routes.js";
+import { settingsRoutes } from "./settings.routes.js";
 
 export async function registerV1Routes(
   app: FastifyInstance,
@@ -51,6 +55,8 @@ export async function registerV1Routes(
     contactHandlers: ContactHandlers;
     engagementHandlers: EngagementHandlers;
     billingHandlers: BillingHandlers;
+    recoveryHandlers: RecoveryHandlers;
+    settingsHandlers: SettingsHandlers;
     env: Env;
     db: Database;
     jobsService: JobsService;
@@ -67,6 +73,7 @@ export async function registerV1Routes(
       );
       await authRoutes(api, deps.authHandlers);
       await databasesRoutes(api, deps.databasesHandlers);
+      await recoveryRoutes(api, deps.recoveryHandlers);
       await plansRoutes(api, deps.plansHandlers);
       await teamRoutes(api, deps.teamHandlers);
       await jobsRoutes(
@@ -84,6 +91,7 @@ export async function registerV1Routes(
       await dashboardRoutes(api, deps.dashboardHandlers);
       await engagementRoutes(api, deps.engagementHandlers);
       await billingRoutes(api, deps.billingHandlers);
+      await settingsRoutes(api, deps.settingsHandlers);
     },
     { prefix: "/api/v1" }
   );

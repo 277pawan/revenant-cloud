@@ -6,6 +6,7 @@ import {
   type ClaimedPayload,
   type ExecutionOutcome,
 } from "./execute-job.js";
+import { withRunnerExecutionLock } from "./execution-lock.js";
 
 export type RunnerPollOptions = {
   apiBase: string;
@@ -92,9 +93,13 @@ export function startRunnerPoll(opts: RunnerPollOptions): () => void {
   console.log(`[${label}] polling ${opts.apiBase} every ${intervalMs}ms`);
 
   const tick = () => {
-    void claimAndComplete(opts).catch((err) =>
-      console.error(`[${label}]`, err)
-    );
+    void withRunnerExecutionLock(() => claimAndComplete(opts))
+      .then((ran) => {
+        if (ran === null) {
+          // Another drill is still running on this API instance — skip this poll tick.
+        }
+      })
+      .catch((err) => console.error(`[${label}]`, err));
   };
 
   tick();

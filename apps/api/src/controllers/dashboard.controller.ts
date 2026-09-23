@@ -1,8 +1,12 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { DashboardService } from "../services/dashboard.service.js";
+import type { createReadinessSnapshotService } from "../services/readiness-snapshot.service.js";
 import { sendHandlerError } from "../lib/http.js";
 
-export function createDashboardHandlers(dashboardService: DashboardService) {
+export function createDashboardHandlers(
+  dashboardService: DashboardService,
+  snapshotService: ReturnType<typeof createReadinessSnapshotService>
+) {
   return {
     overview: async (request: FastifyRequest, reply: FastifyReply) => {
       try {
@@ -23,6 +27,15 @@ export function createDashboardHandlers(dashboardService: DashboardService) {
         return { trends };
       } catch (err) {
         return sendHandlerError(err, request, reply, "Failed to load RTO trends");
+      }
+    },
+
+    rpoTrends: async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const trends = await snapshotService.getRpoTrends(request.user.organizationId);
+        return { trends };
+      } catch (err) {
+        return sendHandlerError(err, request, reply, "Failed to load RPO trends");
       }
     },
   };

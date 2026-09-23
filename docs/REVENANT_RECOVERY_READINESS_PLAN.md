@@ -1873,3 +1873,111 @@ AWS, PostgreSQL, cloud storage, Kubernetes, CI/CD, and other infrastructure rema
 Revenant becomes the layer that continuously answers:
 
 > **"If this system failed right now, could we recover it within our actual recovery objectives — and can we prove it?"**
+
+---
+
+# 29. Multi-service expansion (one platform, many providers)
+
+Revenant must not become "a Postgres tool that also does other things." It should become a **recovery intelligence layer** that works across engines and dependency types using the same contract, readiness score, drift model, and passport.
+
+## Mental model
+
+| Layer | What it is | Today | Future |
+|-------|------------|-------|--------|
+| **Recovery System** | One business system with a contract | `databases` row (1 workflow) | `systems` table grouping DB + app + deps |
+| **Provider** | How to restore or validate a resource | `postgres`, `aws-rds` | `mysql`, `redis`, `http`, `s3`, … |
+| **Recovery Contract** | RTO/RPO + required checks | `recovery_contracts` (Phase 1) | Versioned YAML + org policies |
+| **Drill job** | One proof run | `jobs` + CLI | Same — providers plug in |
+| **Fingerprint** | Recoverable-state snapshot | `recovery_fingerprints` | After every pass |
+| **Passport** | Signed evidence artifact | `evidence_artifacts` → passport v2 | PDF + JSON |
+
+**Rule:** Add providers **one at a time**. Never fork the product per engine.
+
+## Provider plugin shape (CLI + API)
+
+Each provider implements the same interface:
+
+```text
+Provider
+ ├── id                  postgres | aws-rds | mysql | http | redis
+ ├── role                restore | dependency | application
+ ├── fingerprint()       → metadata for drift
+ ├── restore?()          → optional (AWS/RDS owns restore for RDS)
+ ├── validate()          → checks[] with pass/fail + duration
+ └── supportedChecks[]   schema, sql, http_health, dependency_ping, …
+```
+
+**Go CLI:** `internal/providers/postgres`, `internal/providers/awsrds`, later `internal/providers/http`.
+
+**API:** stores contract + aggregates results; does not run checks itself (runner/CLI does).
+
+## Rollout order (recommended)
+
+| Phase | Provider | Customer value |
+|-------|----------|----------------|
+| **Now** | PostgreSQL + AWS RDS | Core restore proof (shipped) |
+| **Phase 5** | HTTP / healthcheck | Application-aware recovery |
+| **Phase 5b** | Redis, S3 (dependency ping) | Dependency gaps in readiness |
+| **Phase 6** | MySQL / MariaDB | Second database engine |
+| **Later** | MongoDB, DynamoDB, K8s workload | Enterprise expansion |
+
+Do **not** add a new engine until the previous one has: contract support, fingerprint, drift rules, passport fields, and dashboard dimension.
+
+## One contract, many resources
+
+```yaml
+recovery:
+  rto: 15m
+  rpo: 5m
+  resources:
+    - id: payments-db
+      provider: postgres
+      role: primary
+    - id: payments-api
+      provider: http
+      role: application
+      healthcheck: https://api.example.com/health
+  dependencies:
+    - id: cache
+      provider: redis
+```
+
+MVP maps `resources[0]` → existing `databaseId`. Later, `systems` owns multiple resources.
+
+## Drift per provider
+
+| Provider | Drift signals |
+|----------|----------------|
+| Postgres | schema hash, size, table count, plan version |
+| AWS RDS | instance class, storage, parameter group, backup window |
+| HTTP | contract hash, endpoint list, expected status codes |
+| Redis | not in last drill, version change |
+
+Drift **warns** first; only failed re-verification marks `NOT RECOVERY READY`.
+
+## Pricing / plans
+
+Keep **one plan** covering all providers the customer enables. Gate by:
+
+- number of **recovery systems** (workflows),
+- concurrent sandboxes,
+- application-aware checks (Pro+),
+- self-hosted agent (Pro+).
+
+Do not sell "MySQL add-on" separately until there is demand.
+
+## Implementation status (this repo)
+
+| Item | Status |
+|------|--------|
+| Plan document | ✅ This file |
+| `recovery_contracts` table | ✅ Migration `0016` |
+| `recovery_fingerprints` / `recovery_drift_events` | ✅ Schema ready |
+| Shared readiness engine | ✅ `@revenant/shared` |
+| `GET /api/v1/databases/:id/readiness` | ✅ Phase 0 |
+| Contract CRUD + YAML editor | 🔜 Phase 1 |
+| Fingerprint on job pass | 🔜 Phase 2 |
+| HTTP provider in CLI | 🔜 Phase 5 |
+| Recovery Passport v2 | 🔜 Phase 6 |
+
+**Next engineering step:** Phase 1 — contract CRUD, default contract on database create, dashboard Recovery Readiness panel wired to readiness API.

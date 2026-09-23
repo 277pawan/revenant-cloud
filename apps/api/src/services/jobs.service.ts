@@ -1,9 +1,10 @@
-import { and, count, desc, eq } from "drizzle-orm";
+import { and, count, desc, eq, ilike, or } from "drizzle-orm";
 import type {
   JobDetailResource,
   JobResource,
   JobResultResource,
   Paginated,
+  RecoveryContractDefinition,
 } from "@revenant/shared";
 import type { Database } from "../db/index.js";
 import {
@@ -12,6 +13,7 @@ import {
   databases,
   jobResults,
   jobs,
+  recoveryContracts,
   validationPlans,
 } from "../db/schema.js";
 import { decryptSecret } from "../lib/crypto.js";
@@ -22,12 +24,12 @@ import {
   assertSubscriptionActive,
 } from "../lib/plan-limits.js";
 import type { RunnerAuthContext } from "../middleware/runner.js";
-import type { CompleteJobInput, CreateJobInput } from "../validations/jobs.schema.js";
-import {
-  paginationMeta,
-  paginationOffset,
-  type PaginationQueryInput,
-} from "../validations/pagination.schema.js";
+import type {
+  CompleteJobInput,
+  CreateJobInput,
+  ListJobsQueryInput,
+} from "../validations/jobs.schema.js";
+import { paginationMeta, paginationOffset } from "../validations/pagination.schema.js";
 
 function toJob(
   row: typeof jobs.$inferSelect,
@@ -66,15 +68,33 @@ export function createJobsService(db: Database, masterKey: string) {
   return {
   async list(
     organizationId: string,
-    pagination: PaginationQueryInput
+    pagination: ListJobsQueryInput
   ): Promise<Paginated<JobResource>> {
-    const { page, pageSize } = pagination;
+    const { page, pageSize, databaseId, search } = pagination;
     const offset = paginationOffset(page, pageSize);
+
+    const conditions = [eq(jobs.organizationId, organizationId)];
+    if (databaseId) {
+      conditions.push(eq(jobs.databaseId, databaseId));
+    }
+    if (search) {
+      const term = `%${search}%`;
+      conditions.push(
+        or(
+          ilike(jobs.id, term),
+          ilike(jobs.status, term),
+          ilike(jobs.trigger, term),
+          ilike(databases.name, term)
+        )!
+      );
+    }
+    const whereClause = and(...conditions);
 
     const [totalRow] = await db
       .select({ value: count() })
       .from(jobs)
-      .where(eq(jobs.organizationId, organizationId));
+      .innerJoin(databases, eq(databases.id, jobs.databaseId))
+      .where(whereClause);
 
     const total = Number(totalRow?.value ?? 0);
 
@@ -85,7 +105,7 @@ export function createJobsService(db: Database, masterKey: string) {
       })
       .from(jobs)
       .innerJoin(databases, eq(databases.id, jobs.databaseId))
-      .where(eq(jobs.organizationId, organizationId))
+      .where(whereClause)
       .orderBy(desc(jobs.createdAt))
       .limit(pageSize)
       .offset(offset);
@@ -143,9 +163,7 @@ export function createJobsService(db: Database, masterKey: string) {
     }
 
     await assertSubscriptionActive(db, organizationId);
-    if (dbRows[0].recoveryMode === "aws-rds") {
-      await assertSandboxConcurrency(db, organizationId);
-    }
+    await assertSandboxConcurrency(db, organizationId);
 
     const [job] = await db
       .insert(jobs)
@@ -201,9 +219,7 @@ export function createJobsService(db: Database, masterKey: string) {
     }
 
     await assertSubscriptionActive(db, organizationId);
-    if (dbRows[0].recoveryMode === "aws-rds") {
-      await assertSandboxConcurrency(db, organizationId);
-    }
+    await assertSandboxConcurrency(db, organizationId);
 
     const [job] = await db
       .insert(jobs)
@@ -325,6 +341,18 @@ export function createJobsService(db: Database, masterKey: string) {
       .where(eq(validationPlans.databaseId, database.id))
       .limit(1);
 
+    const [contractRow] = await db
+      .select()
+      .from(recoveryContracts)
+      .where(eq(recoveryContracts.databaseId, database.id))
+      .limit(1);
+
+    const contractDef = (contractRow?.definitionJson ?? {}) as RecoveryContractDefinition;
+    const healthcheckUrl = contractDef.recovery?.application?.healthcheck?.trim();
+    const healthcheckRequired =
+      contractDef.recovery?.required?.healthcheck === true ||
+      contractDef.recovery?.required?.api === true;
+
     const recoveryMode = database.recoveryMode === "aws-rds" ? "aws-rds" : "direct";
     const recovery =
       recoveryMode === "aws-rds" && database.rdsSourceIdentifier && database.region
@@ -355,6 +383,10 @@ export function createJobsService(db: Database, masterKey: string) {
       awsCredentials,
       planYaml: plan[0]?.yamlText ?? null,
       planVersion: plan[0]?.version ?? null,
+      contractHealthcheck:
+        healthcheckRequired && healthcheckUrl
+          ? { url: healthcheckUrl }
+          : null,
       executionMode,
       fullDrill:
         updated.trigger === "full-drill" ||

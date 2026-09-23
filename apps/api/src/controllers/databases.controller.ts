@@ -6,9 +6,13 @@ import {
 } from "../validations/databases.schema.js";
 import { databasesListQuerySchema } from "../validations/databases.schema.js";
 import type { DatabasesService } from "../services/databases.service.js";
+import type { RecoveryContractService } from "../services/recovery-contract.service.js";
 import { sendHandlerError } from "../lib/http.js";
 
-export function createDatabasesHandlers(databasesService: DatabasesService) {
+export function createDatabasesHandlers(
+  databasesService: DatabasesService,
+  recoveryContractService: RecoveryContractService
+) {
   return {
     list: async (request: FastifyRequest, reply: FastifyReply) => {
       const query = databasesListQuerySchema.safeParse(request.query);
@@ -61,6 +65,10 @@ export function createDatabasesHandlers(databasesService: DatabasesService) {
         const database = await databasesService.create(
           request.user.organizationId,
           parsed.data
+        );
+        await recoveryContractService.ensureDefault(
+          request.user.organizationId,
+          database.id
         );
         return reply.status(201).send({ database });
       } catch (err) {

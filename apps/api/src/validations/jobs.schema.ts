@@ -1,4 +1,10 @@
 import { z } from "zod";
+import { paginationQuerySchema } from "./pagination.schema.js";
+
+export const listJobsQuerySchema = paginationQuerySchema.extend({
+  databaseId: z.string().uuid().optional(),
+  search: z.string().trim().max(255).optional(),
+});
 
 export const createJobSchema = z.object({
   databaseId: z.string().uuid(),
@@ -28,5 +34,6 @@ export const completeJobSchema = z.object({
     .default([]),
 });
 
+export type ListJobsQueryInput = z.infer<typeof listJobsQuerySchema>;
 export type CreateJobInput = z.infer<typeof createJobSchema>;
 export type CompleteJobInput = z.infer<typeof completeJobSchema>;

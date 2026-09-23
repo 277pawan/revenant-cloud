@@ -4,14 +4,46 @@ import path from "node:path";
 import { and, desc, eq, ilike, or, sql } from "drizzle-orm";
 import type { EvidenceArtifactResource, JobDetailResource } from "@revenant/shared";
 import type { Database } from "../db/index.js";
-import { databases, evidenceArtifacts, jobs, organizations } from "../db/schema.js";
+import {
+  databases,
+  evidenceArtifacts,
+  jobResults,
+  jobs,
+  organizations,
+} from "../db/schema.js";
 import { createAppError } from "../lib/errors.js";
 import { renderEvidencePdf } from "../lib/evidence-pdf.js";
+import { hashRecoveryPayload } from "../lib/recovery-signing.js";
+import type { RecoveryPassportDocument } from "./recovery-passport.service.js";
 import {
   paginationMeta,
   paginationOffset,
   type ListSearchQueryInput,
 } from "../validations/pagination.schema.js";
+
+function verifyPassportBody(body: string, storedSha256: string): void {
+  let parsed: RecoveryPassportDocument;
+  try {
+    parsed = JSON.parse(body) as RecoveryPassportDocument;
+  } catch {
+    throw createAppError(500, "Evidence JSON is unreadable", "INTEGRITY");
+  }
+
+  const { integrity, ...bodyWithoutIntegrity } = parsed;
+  if (!integrity?.hash) {
+    throw createAppError(500, "Evidence integrity check failed", "INTEGRITY");
+  }
+
+  const canonical = JSON.stringify(bodyWithoutIntegrity, null, 2);
+  if (hashRecoveryPayload(canonical) !== integrity.hash) {
+    throw createAppError(500, "Evidence integrity check failed", "INTEGRITY");
+  }
+
+  const fileHash = createHash("sha256").update(body).digest("hex");
+  if (fileHash !== storedSha256 && integrity.hash !== storedSha256) {
+    throw createAppError(500, "Evidence integrity check failed", "INTEGRITY");
+  }
+}
 
 function toResource(
   row: typeof evidenceArtifacts.$inferSelect,
@@ -37,7 +69,9 @@ export function createEvidenceService(db: Database, evidenceDir: string) {
       const existing = await db
         .select({ id: evidenceArtifacts.id })
         .from(evidenceArtifacts)
-        .where(eq(evidenceArtifacts.jobId, job.id))
+        .where(
+          and(eq(evidenceArtifacts.jobId, job.id), eq(evidenceArtifacts.kind, "json"))
+        )
         .limit(1);
 
       if (existing[0]) return;
@@ -153,10 +187,14 @@ export function createEvidenceService(db: Database, evidenceDir: string) {
 
       const absPath = path.join(evidenceDir, rows[0].storageKey);
       const body = await readFile(absPath, "utf8");
-      const hash = createHash("sha256").update(body).digest("hex");
 
-      if (hash !== rows[0].sha256) {
-        throw createAppError(500, "Evidence integrity check failed", "INTEGRITY");
+      if (rows[0].kind === "passport") {
+        verifyPassportBody(body, rows[0].sha256);
+      } else {
+        const hash = createHash("sha256").update(body).digest("hex");
+        if (hash !== rows[0].sha256) {
+          throw createAppError(500, "Evidence integrity check failed", "INTEGRITY");
+        }
       }
 
       return { body, artifact: rows[0] };
@@ -164,14 +202,70 @@ export function createEvidenceService(db: Database, evidenceDir: string) {
 
     async getPdf(organizationId: string, id: string) {
       const { body, artifact } = await this.getDownload(organizationId, id);
-      let parsed: { job?: JobDetailResource; archivedAt?: string };
-      try {
-        parsed = JSON.parse(body) as { job?: JobDetailResource; archivedAt?: string };
-      } catch {
-        throw createAppError(500, "Evidence JSON is unreadable", "INTEGRITY");
-      }
-      if (!parsed.job) {
-        throw createAppError(500, "Evidence JSON is missing job data", "INTEGRITY");
+      let job: JobDetailResource;
+      let archivedAt: string | undefined;
+
+      if (artifact.kind === "passport") {
+        const passport = JSON.parse(body) as RecoveryPassportDocument;
+        const [jobRow] = await db
+          .select({
+            job: jobs,
+            databaseName: databases.name,
+          })
+          .from(jobs)
+          .innerJoin(databases, eq(databases.id, jobs.databaseId))
+          .where(
+            and(eq(jobs.id, passport.jobId), eq(jobs.organizationId, organizationId))
+          )
+          .limit(1);
+
+        if (!jobRow) {
+          throw createAppError(404, "Job not found for passport", "NOT_FOUND");
+        }
+
+        const results = await db
+          .select()
+          .from(jobResults)
+          .where(eq(jobResults.jobId, passport.jobId))
+          .orderBy(jobResults.createdAt);
+
+        job = {
+          id: jobRow.job.id,
+          databaseId: jobRow.job.databaseId,
+          databaseName: jobRow.databaseName,
+          status: jobRow.job.status,
+          trigger: jobRow.job.trigger,
+          executionMode: jobRow.job.executionMode,
+          triggeredByUserId: jobRow.job.triggeredByUserId,
+          errorMessage: jobRow.job.errorMessage,
+          rtoSeconds: jobRow.job.rtoSeconds,
+          startedAt: jobRow.job.startedAt?.toISOString() ?? null,
+          finishedAt: jobRow.job.finishedAt?.toISOString() ?? null,
+          createdAt: jobRow.job.createdAt.toISOString(),
+          updatedAt: jobRow.job.updatedAt.toISOString(),
+          results: results.map((r) => ({
+            id: r.id,
+            checkName: r.checkName,
+            checkType: r.checkType,
+            status: r.status,
+            message: r.message,
+            durationMs: r.durationMs,
+            createdAt: r.createdAt.toISOString(),
+          })),
+        };
+        archivedAt = passport.verifiedAt;
+      } else {
+        let parsed: { job?: JobDetailResource; archivedAt?: string };
+        try {
+          parsed = JSON.parse(body) as { job?: JobDetailResource; archivedAt?: string };
+        } catch {
+          throw createAppError(500, "Evidence JSON is unreadable", "INTEGRITY");
+        }
+        if (!parsed.job) {
+          throw createAppError(500, "Evidence JSON is missing job data", "INTEGRITY");
+        }
+        job = parsed.job;
+        archivedAt = parsed.archivedAt;
       }
 
       const [org] = await db
@@ -181,10 +275,10 @@ export function createEvidenceService(db: Database, evidenceDir: string) {
         .limit(1);
 
       const pdf = await renderEvidencePdf({
-        job: parsed.job,
+        job,
         organizationName: org?.name ?? "Organization",
         sha256: artifact.sha256,
-        archivedAt: parsed.archivedAt,
+        archivedAt,
       });
 
       return { pdf, artifact };
