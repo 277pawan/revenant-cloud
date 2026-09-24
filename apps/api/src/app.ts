@@ -41,7 +41,9 @@ import { createAuditHandlers } from "./controllers/audit.controller.js";
 import { createDashboardHandlers } from "./controllers/dashboard.controller.js";
 import { createPublicHandlers } from "./controllers/public.controller.js";
 import { createContactHandlers } from "./controllers/contact.controller.js";
+import { createFundingHandlers } from "./controllers/funding.controller.js";
 import { createContactService } from "./services/contact.service.js";
+import { createFundingService } from "./services/funding.service.js";
 import { createEngagementHandlers } from "./controllers/engagement.controller.js";
 import { createEngagementService } from "./services/engagement.service.js";
 import { createBillingHandlers } from "./controllers/billing.controller.js";
@@ -187,6 +189,7 @@ export async function buildApp(env: Env) {
     ),
     publicHandlers: createPublicHandlers(env, authProvidersService),
     contactHandlers: createContactHandlers(createContactService(db, env)),
+    fundingHandlers: createFundingHandlers(createFundingService(db, env)),
     engagementHandlers: createEngagementHandlers(createEngagementService(db)),
     billingHandlers: createBillingHandlers(
       createBillingService(db, env),

@@ -177,6 +177,47 @@ export function passwordResetHtml(resetUrl: string, brand: EmailBrand): string {
   });
 }
 
+export function fundingThankYouHtml(input: {
+  brand: EmailBrand;
+  name: string;
+  amountInr: number;
+}): string {
+  return wrapEmailHtml({
+    brand: input.brand,
+    eyebrow: "Thank you",
+    title: "We received your support",
+    bodyHtml: `
+      <p style="margin:0 0 12px;">Hi ${escapeHtml(input.name)},</p>
+      <p style="margin:0 0 12px;">Thank you for contributing <strong>₹${input.amountInr.toLocaleString("en-IN")}</strong> to Revenant. It helps us build better disaster-recovery tooling for PostgreSQL and AWS.</p>
+      <p style="margin:0;color:#64748b;">If you left a note, we read every one. Stars on GitHub help too.</p>`,
+    footerNote: "This is a one-time contribution — not a subscription.",
+  });
+}
+
+export function fundingReceivedHtml(input: {
+  brand: EmailBrand;
+  name: string;
+  email: string;
+  amountInr: number;
+  note?: string | null;
+  paymentId: string;
+}): string {
+  const note = input.note?.trim()
+    ? `<p style="margin:12px 0 0;"><strong>Note:</strong> ${escapeHtml(input.note)}</p>`
+    : "";
+  return wrapEmailHtml({
+    brand: input.brand,
+    eyebrow: "Funding",
+    title: `₹${input.amountInr.toLocaleString("en-IN")} received`,
+    bodyHtml: `
+      <p style="margin:0 0 12px;"><strong>Name:</strong> ${escapeHtml(input.name)}</p>
+      <p style="margin:0 0 12px;"><strong>Email:</strong> ${escapeHtml(input.email)}</p>
+      <p style="margin:0 0 12px;"><strong>Payment ID:</strong> ${escapeHtml(input.paymentId)}</p>
+      ${note}`,
+    footerNote: "Paid via Razorpay on the marketing Fund us page.",
+  });
+}
+
 export function contactFormHtml(input: {
   brand: EmailBrand;
   type: "talk" | "coffee";

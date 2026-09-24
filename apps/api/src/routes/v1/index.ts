@@ -12,6 +12,7 @@ import type { AuditHandlers } from "../../controllers/audit.controller.js";
 import type { DashboardHandlers } from "../../controllers/dashboard.controller.js";
 import type { PublicHandlers } from "../../controllers/public.controller.js";
 import type { ContactHandlers } from "../../controllers/contact.controller.js";
+import type { FundingHandlers } from "../../controllers/funding.controller.js";
 import type { EngagementHandlers } from "../../controllers/engagement.controller.js";
 import type { BillingHandlers } from "../../controllers/billing.controller.js";
 import type { RecoveryHandlers } from "../../controllers/recovery.controller.js";
@@ -53,6 +54,7 @@ export async function registerV1Routes(
     dashboardHandlers: DashboardHandlers;
     publicHandlers: PublicHandlers;
     contactHandlers: ContactHandlers;
+    fundingHandlers: FundingHandlers;
     engagementHandlers: EngagementHandlers;
     billingHandlers: BillingHandlers;
     recoveryHandlers: RecoveryHandlers;
@@ -69,6 +71,7 @@ export async function registerV1Routes(
         api,
         deps.publicHandlers,
         deps.contactHandlers,
+        deps.fundingHandlers,
         deps.engagementHandlers
       );
       await authRoutes(api, deps.authHandlers);

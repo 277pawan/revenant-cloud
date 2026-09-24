@@ -525,6 +525,21 @@ export const readinessSnapshots = pgTable("readiness_snapshots", {
   recordedAt: timestamp("recorded_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+/** Marketing site — one-time Razorpay funding (Fund us / buy coffee). */
+export const fundingPayments = pgTable("funding_payments", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  razorpayOrderId: varchar("razorpay_order_id", { length: 64 }).notNull(),
+  razorpayPaymentId: varchar("razorpay_payment_id", { length: 64 }),
+  amountPaise: integer("amount_paise").notNull(),
+  currency: varchar("currency", { length: 8 }).notNull().default("INR"),
+  status: varchar("status", { length: 32 }).notNull().default("created"),
+  name: varchar("name", { length: 255 }).notNull(),
+  email: varchar("email", { length: 255 }).notNull(),
+  note: text("note"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  paidAt: timestamp("paid_at", { withTimezone: true }),
+});
+
 /** Razorpay checkout orders — idempotent payment verification. */
 export const billingOrders = pgTable("billing_orders", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -605,3 +620,4 @@ export type RecoveryDriftEvent = typeof recoveryDriftEvents.$inferSelect;
 export type RecoveryChallenge = typeof recoveryChallenges.$inferSelect;
 export type ReadinessSnapshot = typeof readinessSnapshots.$inferSelect;
 export type BillingOrder = typeof billingOrders.$inferSelect;
+export type FundingPayment = typeof fundingPayments.$inferSelect;
