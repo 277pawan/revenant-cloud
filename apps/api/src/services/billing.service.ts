@@ -13,7 +13,7 @@ import { and, eq } from "drizzle-orm";
 import { findOrganizationByRazorpaySubscription, hasAutopaySetup } from "../lib/billing-access.js";
 import type { Database } from "../db/index.js";
 import { billingOrders, organizations, users } from "../db/schema.js";
-import { createAppError } from "../lib/errors.js";
+import { createAppError, isAppError } from "../lib/errors.js";
 import {
   countActiveRestoreDrills,
   countPlanResource,
@@ -34,6 +34,7 @@ import {
   isSubscriptionActive,
   parseOrganizationPlan,
   trialDaysRemaining,
+  trialEndsAtFromNow,
 } from "../lib/org-subscription.js";
 import type { Env } from "../config/env.js";
 
@@ -86,8 +87,132 @@ export function createBillingService(db: Database, env: Env) {
     await db.update(organizations).set(patch).where(eq(organizations.id, organizationId));
   }
 
+  /** Full 30-day trial starts when autopay (₹1) completes — not at signup. */
+  async function alignTrialAfterAutopaySetup(
+    organizationId: string,
+    razorpaySubscriptionId?: string | null
+  ): Promise<void> {
+    const trialEndsAt = trialEndsAtFromNow();
+    await db
+      .update(organizations)
+      .set({
+        trialEndsAt,
+        subscriptionStatus: "trialing",
+        updatedAt: new Date(),
+      })
+      .where(eq(organizations.id, organizationId));
+
+    if (!razorpaySubscriptionId || !razorpayReady || !env.RAZORPAY_KEY_ID || !env.RAZORPAY_KEY_SECRET) {
+      return;
+    }
+
+    try {
+      const client = createRazorpayClient(env.RAZORPAY_KEY_ID, env.RAZORPAY_KEY_SECRET);
+      const startAtSec = Math.max(
+        Math.floor(trialEndsAt.getTime() / 1000),
+        Math.floor(Date.now() / 1000) + 600
+      );
+      await (
+        client.subscriptions.update as (
+          id: string,
+          body: { start_at: number }
+        ) => Promise<unknown>
+      )(razorpaySubscriptionId, { start_at: startAtSec });
+    } catch (err) {
+      console.warn(
+        "[billing] Razorpay start_at sync failed (trial extended in app):",
+        formatRazorpayError(err)
+      );
+    }
+  }
+
   function recurringAmountInr(plan: OrganizationPlan): number {
     return plan === "pro" ? PRO_PRICE_INR : STARTER_PRICE_INR;
+  }
+
+  function subscriptionCheckoutResponse(
+    subscriptionId: string,
+    billingPlan: OrganizationPlan,
+    planDef: ReturnType<typeof getPlanDefinition>,
+    monthlyInr: number,
+    trialEndsAt: Date
+  ): BillingCreateOrderResponse {
+    return {
+      checkoutMode: "subscription",
+      subscriptionId,
+      amount: STARTER_AUTOPAY_SETUP_PAISE,
+      currency: "INR",
+      keyId: env.RAZORPAY_KEY_ID!,
+      description:
+        `${planDef.name} autopay — ₹1 today to verify your card. ₹${monthlyInr}/month starts after your free trial.`,
+      plan: billingPlan,
+      purpose: "autopay_setup",
+      trialEndsAt: trialEndsAt.toISOString(),
+      recurringAmountInr: monthlyInr,
+    };
+  }
+
+  async function clearStaleSubscription(organizationId: string): Promise<void> {
+    await db
+      .update(organizations)
+      .set({
+        razorpaySubscriptionId: null,
+        razorpaySubscriptionStatus: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(organizations.id, organizationId));
+  }
+
+  /** Resume abandoned checkout or clear dead subscriptions instead of hard 409. */
+  async function resolveExistingSubscriptionCheckout(
+    client: ReturnType<typeof createRazorpayClient>,
+    organizationId: string,
+    subscriptionId: string,
+    billingPlan: OrganizationPlan,
+    planDef: ReturnType<typeof getPlanDefinition>,
+    monthlyInr: number,
+    trialEndsAt: Date
+  ): Promise<BillingCreateOrderResponse | null> {
+    try {
+      const existing = (await client.subscriptions.fetch(
+        subscriptionId
+      )) as RazorpaySubscriptionEntity;
+
+      await syncOrgSubscription(organizationId, existing);
+
+      if (["authenticated", "active", "pending"].includes(existing.status)) {
+        throw createAppError(
+          409,
+          "Autopay is already set up for this organization",
+          "AUTOPAY_ALREADY_ACTIVE"
+        );
+      }
+
+      if (existing.status === "created") {
+        return subscriptionCheckoutResponse(
+          existing.id,
+          billingPlan,
+          planDef,
+          monthlyInr,
+          trialEndsAt
+        );
+      }
+
+      await clearStaleSubscription(organizationId);
+      return null;
+    } catch (err) {
+      if (isAppError(err)) throw err;
+      const status = razorpayHttpStatus(err);
+      if (status === 404) {
+        await clearStaleSubscription(organizationId);
+        return null;
+      }
+      throw createAppError(
+        status,
+        formatRazorpayError(err),
+        status === 401 ? "RAZORPAY_AUTH_FAILED" : "RAZORPAY_SUBSCRIPTION_FAILED"
+      );
+    }
   }
 
   async function createLegacyOrderCheckout(
@@ -238,14 +363,6 @@ export function createBillingService(db: Database, env: Env) {
         throw createAppError(400, "User email required for billing", "VALIDATION_ERROR");
       }
 
-      if (org.razorpaySubscriptionId) {
-        throw createAppError(
-          409,
-          "A subscription checkout is already in progress. Complete or cancel it in Razorpay.",
-          "SUBSCRIPTION_IN_PROGRESS"
-        );
-      }
-
       const billingPlan = parseOrganizationPlan(org.plan);
       if (billingPlan !== "starter" && billingPlan !== "pro") {
         throw createAppError(
@@ -258,6 +375,19 @@ export function createBillingService(db: Database, env: Env) {
       const planDef = getPlanDefinition(billingPlan);
       const monthlyInr = recurringAmountInr(billingPlan);
       const trialEndsAt = org.trialEndsAt ?? new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+
+      if (org.razorpaySubscriptionId) {
+        const resumed = await resolveExistingSubscriptionCheckout(
+          client,
+          organizationId,
+          org.razorpaySubscriptionId,
+          billingPlan,
+          planDef,
+          monthlyInr,
+          trialEndsAt
+        );
+        if (resumed) return resumed;
+      }
       const startAtSec = Math.max(
         Math.floor(trialEndsAt.getTime() / 1000),
         Math.floor(Date.now() / 1000) + 600
@@ -384,19 +514,13 @@ export function createBillingService(db: Database, env: Env) {
         throw err;
       }
 
-      return {
-        checkoutMode: "subscription",
-        subscriptionId: subscription.id,
-        amount: STARTER_AUTOPAY_SETUP_PAISE,
-        currency: "INR",
-        keyId: env.RAZORPAY_KEY_ID!,
-        description:
-          `${planDef.name} autopay — ₹1 today to verify your card. ₹${monthlyInr}/month starts after your free trial.`,
-        plan: billingPlan,
-        purpose: "autopay_setup",
-        trialEndsAt: trialEndsAt.toISOString(),
-        recurringAmountInr: monthlyInr,
-      };
+      return subscriptionCheckoutResponse(
+        subscription.id,
+        billingPlan,
+        planDef,
+        monthlyInr,
+        trialEndsAt
+      );
     },
 
     async verifyStarterAutopayPayment(
@@ -466,6 +590,7 @@ export function createBillingService(db: Database, env: Env) {
           .where(eq(billingOrders.id, orderRow.id));
 
         await syncOrgSubscription(organizationId, subscription);
+        await alignTrialAfterAutopaySetup(organizationId, razorpay_subscription_id);
 
         void userId;
         return { ok: true, autopaySetup: true };
@@ -519,6 +644,8 @@ export function createBillingService(db: Database, env: Env) {
         })
         .where(eq(billingOrders.id, orderRow.id));
 
+      await alignTrialAfterAutopaySetup(organizationId, null);
+
       void userId;
       return { ok: true, autopaySetup: true };
     },
@@ -565,6 +692,9 @@ export function createBillingService(db: Database, env: Env) {
         );
         if (organizationId) {
           await syncOrgSubscription(organizationId, subscription);
+          if (event === "subscription.authenticated") {
+            await alignTrialAfterAutopaySetup(organizationId, subscription.id);
+          }
         }
       }
 
