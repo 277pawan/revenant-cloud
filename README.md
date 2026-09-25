@@ -2,7 +2,7 @@
 
 Backend control plane for fleet-wide PostgreSQL restore validation.
 
-**Frontend is a separate repo:** [revenant-cloud-web](../revenant-cloud-web)
+**Frontend:** [revenant-cloud-web](../revenant-cloud-web) · **Marketing:** [revenant-website](../revenant-website) · **Product roadmap:** [docs/REVENANT_STATUS_AND_ROADMAP.md](./docs/REVENANT_STATUS_AND_ROADMAP.md)
 
 ## Local setup (no Docker)
 
