@@ -261,19 +261,20 @@ export function createDashboardService(db: Database) {
           id: "database",
           label: "Register a database workflow",
           done: hasDatabase,
-          href: "/databases/new",
+          href: "/databases/new?sample=aws-freetier",
         },
         {
           id: "plan",
           label: "Save a validation plan (or import AWS free-tier template)",
           done: hasPlan,
-          href: "/settings/validation-plans",
+          href: "/settings/validation-plans?template=aws-freetier",
         },
         {
           id: "aws",
           label: "Add AWS keys for managed sandbox drills (RDS snapshot → verify)",
           done: dbRows.some((r) => r.db.recoveryMode === "aws-rds" && r.hasAws),
-          href: "/databases/new",
+          href: "/databases/new?sample=aws-freetier",
+          docsHref: "/docs/aws/iam",
         },
         {
           id: "drill",
@@ -298,6 +299,7 @@ export function createDashboardService(db: Database) {
           label: "Add Slack or email alerts",
           done: hasIntegration,
           href: "/settings/webhooks",
+          docsHref: "/docs/integrations/slack",
         },
       ];
 

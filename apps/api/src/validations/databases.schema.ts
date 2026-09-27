@@ -20,6 +20,7 @@ const awsRecoveryRefine = (
     password?: string | null;
     awsAccessKeyId?: string | null;
     awsSecretAccessKey?: string | null;
+    awsSessionToken?: string | null;
   },
   ctx: z.RefinementCtx,
   requireAwsKeys: boolean
@@ -96,6 +97,7 @@ export const createDatabaseSchema = z
     recoverySandboxInstanceClass: z.string().max(50).optional(),
     awsAccessKeyId: z.string().max(128).optional(),
     awsSecretAccessKey: z.string().max(128).optional(),
+    awsSessionToken: z.string().max(256).optional(),
     description: z.string().max(2000).optional(),
   })
   .superRefine((data, ctx) => {
@@ -127,6 +129,7 @@ export const updateDatabaseSchema = z
     recoverySandboxInstanceClass: z.string().max(50).nullable().optional(),
     awsAccessKeyId: z.string().max(128).optional(),
     awsSecretAccessKey: z.string().max(128).optional(),
+    awsSessionToken: z.string().max(256).optional(),
     description: z.string().max(2000).nullable().optional(),
   })
   .superRefine((data, ctx) => {

@@ -20,6 +20,12 @@ export async function jobsRoutes(
   );
 
   app.get(
+    "/jobs/active",
+    { preHandler: requirePermission("jobs:read") },
+    handlers.listActive
+  );
+
+  app.get(
     "/jobs/:id",
     { preHandler: requirePermission("jobs:read") },
     handlers.get
@@ -41,6 +47,12 @@ export async function jobsRoutes(
     "/jobs",
     { preHandler: requirePermission("jobs:run") },
     handlers.create
+  );
+
+  app.post(
+    "/jobs/:id/cancel",
+    { preHandler: requirePermission("jobs:run") },
+    handlers.cancel
   );
 
   const runnerAuth = requireRunner(env, db);

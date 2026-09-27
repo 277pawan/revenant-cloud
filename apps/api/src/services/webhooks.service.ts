@@ -1,13 +1,26 @@
 import { randomBytes } from "node:crypto";
 import { and, desc, eq, sql } from "drizzle-orm";
-import type {
-  JobDetailResource,
-  WebhookConfig,
-  WebhookEndpointResource,
-  WebhookProvider,
+import {
+  DEFAULT_RECOVERY_CONTRACT,
+  detectRecoveryContractBreaches,
+  detectRecoveryRegression,
+  extractRpoObservedSeconds,
+  parseDurationToSeconds,
+  type JobDetailResource,
+  type RecoveryContractDefinition,
+  type WebhookConfig,
+  type WebhookEndpointResource,
+  type WebhookProvider,
 } from "@revenant/shared";
 import type { Database } from "../db/index.js";
-import { webhookDeliveries, webhookEndpoints } from "../db/schema.js";
+import {
+  jobResults,
+  jobs,
+  readinessSnapshots,
+  recoveryContracts,
+  webhookDeliveries,
+  webhookEndpoints,
+} from "../db/schema.js";
 import { deliverToProvider, INTEGRATION_PROVIDERS } from "../integrations/deliver.js";
 import { encryptSecret } from "../lib/crypto.js";
 import { createAppError } from "../lib/errors.js";
@@ -83,6 +96,39 @@ function toResource(row: typeof webhookEndpoints.$inferSelect): WebhookEndpointR
     enabled: row.enabled === "true",
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
+const TEST_JOB_ID = "00000000-0000-4000-8000-000000000099";
+const TEST_DATABASE_ID = "00000000-0000-4000-8000-000000000098";
+
+function buildTestJob(): JobDetailResource {
+  const now = new Date().toISOString();
+  return {
+    id: TEST_JOB_ID,
+    databaseId: TEST_DATABASE_ID,
+    databaseName: "Revenant test notification",
+    status: "pass",
+    trigger: "manual",
+    executionMode: "cloud",
+    triggeredByUserId: null,
+    errorMessage: null,
+    rtoSeconds: 42,
+    startedAt: now,
+    finishedAt: now,
+    createdAt: now,
+    updatedAt: now,
+    results: [
+      {
+        id: "00000000-0000-4000-8000-000000000097",
+        checkName: "row_count",
+        checkType: "row_count",
+        status: "pass",
+        message: "Test check passed",
+        durationMs: 120,
+        createdAt: now,
+      },
+    ],
   };
 }
 
@@ -262,10 +308,160 @@ export function createWebhooksService(db: Database, masterKey: string, env: Env)
       }
     },
 
+    async sendTest(organizationId: string, id: string) {
+      const [endpoint] = await db
+        .select()
+        .from(webhookEndpoints)
+        .where(
+          and(
+            eq(webhookEndpoints.id, id),
+            eq(webhookEndpoints.organizationId, organizationId)
+          )
+        )
+        .limit(1);
+
+      if (!endpoint) {
+        throw createAppError(404, "Webhook not found", "NOT_FOUND");
+      }
+
+      const testJob = buildTestJob();
+      const result = await deliverToProvider(endpoint, testJob, "job.pass", masterKey, {
+        appUrl: env.PUBLIC_APP_URL,
+        marketingUrl: env.PUBLIC_MARKETING_URL,
+      });
+
+      if (!result.ok) {
+        throw createAppError(
+          502,
+          result.error ?? "Test delivery failed",
+          "DELIVERY_FAILED"
+        );
+      }
+
+      return { ok: true as const };
+    },
+
     async dispatchForJob(organizationId: string, job: JobDetailResource) {
       const event = `job.${job.status}`;
       if (!["job.pass", "job.fail", "job.error"].includes(event)) return;
 
+      await this.dispatchEvent(organizationId, job, event);
+    },
+
+    async dispatchContractBreachIfNeeded(
+      organizationId: string,
+      job: JobDetailResource
+    ) {
+      if (job.status !== "pass") return;
+
+      const [contractRow] = await db
+        .select({ definitionJson: recoveryContracts.definitionJson })
+        .from(recoveryContracts)
+        .where(
+          and(
+            eq(recoveryContracts.organizationId, organizationId),
+            eq(recoveryContracts.databaseId, job.databaseId)
+          )
+        )
+        .limit(1);
+
+      const definition = (contractRow?.definitionJson ??
+        DEFAULT_RECOVERY_CONTRACT) as RecoveryContractDefinition;
+
+      const breaches = detectRecoveryContractBreaches({
+        rtoTargetSeconds: parseDurationToSeconds(definition.recovery.rto),
+        rtoActualSeconds: job.rtoSeconds,
+        rpoTargetSeconds: parseDurationToSeconds(definition.recovery.rpo),
+        rpoObservedSeconds: extractRpoObservedSeconds(job.results),
+      });
+
+      if (breaches.length === 0) return;
+
+      const breachJob: JobDetailResource = {
+        ...job,
+        errorMessage: breaches.join(" · "),
+      };
+
+      await this.dispatchEvent(organizationId, breachJob, "contract.breach");
+    },
+
+    async dispatchContractRegressionIfNeeded(
+      organizationId: string,
+      job: JobDetailResource
+    ) {
+      if (job.status !== "pass") return;
+
+      const priorPassJobs = await db
+        .select()
+        .from(jobs)
+        .where(
+          and(
+            eq(jobs.organizationId, organizationId),
+            eq(jobs.databaseId, job.databaseId),
+            eq(jobs.status, "pass")
+          )
+        )
+        .orderBy(desc(jobs.finishedAt))
+        .limit(2);
+
+      const previousPassJob = priorPassJobs.find((row) => row.id !== job.id);
+      if (!previousPassJob) return;
+
+      const prevResults = await db
+        .select()
+        .from(jobResults)
+        .where(eq(jobResults.jobId, previousPassJob.id));
+
+      const [currentSnapshot] = await db
+        .select({ score: readinessSnapshots.score })
+        .from(readinessSnapshots)
+        .where(eq(readinessSnapshots.jobId, job.id))
+        .limit(1);
+
+      const [previousSnapshot] = await db
+        .select({ score: readinessSnapshots.score })
+        .from(readinessSnapshots)
+        .where(eq(readinessSnapshots.jobId, previousPassJob.id))
+        .limit(1);
+
+      const regression = detectRecoveryRegression({
+        current: {
+          jobId: job.id,
+          finishedAt: job.finishedAt,
+          rtoSeconds: job.rtoSeconds,
+          rpoObservedSeconds: extractRpoObservedSeconds(job.results),
+          score: currentSnapshot?.score ?? null,
+        },
+        previous: {
+          jobId: previousPassJob.id,
+          finishedAt: previousPassJob.finishedAt?.toISOString() ?? null,
+          rtoSeconds: previousPassJob.rtoSeconds,
+          rpoObservedSeconds: extractRpoObservedSeconds(
+            prevResults.map((r) => ({
+              checkType: r.checkType,
+              status: r.status,
+              message: r.message,
+            }))
+          ),
+          score: previousSnapshot?.score ?? null,
+        },
+      });
+
+      if (!regression.detected) return;
+
+      const regressionJob: JobDetailResource = {
+        ...job,
+        errorMessage: regression.message ?? "Recovery regression detected",
+      };
+
+      await this.dispatchEvent(organizationId, regressionJob, "contract.regression");
+    },
+
+    async dispatchEvent(
+      organizationId: string,
+      job: JobDetailResource,
+      event: string
+    ) {
       const endpoints = await db
         .select()
         .from(webhookEndpoints)

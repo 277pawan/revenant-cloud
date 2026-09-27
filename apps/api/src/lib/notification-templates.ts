@@ -1,14 +1,41 @@
 import type { JobDetailResource } from "@revenant/shared";
-import { type EmailBrand, escapeHtml, wrapEmailHtml } from "./email-layout.js";
+import {
+  type EmailBrand,
+  type EmailTone,
+  emailCallout,
+  emailHealthBar,
+  emailKeyValueTable,
+  emailMetricTiles,
+  emailStatusBadge,
+  escapeHtml,
+  formatEmailDateTime,
+  wrapEmailHtml,
+} from "./email-layout.js";
 
 function eventMeta(event: string) {
   if (event === "job.pass") {
-    return { label: "Passed", emoji: "✅", color: "#059669" };
+    return { label: "Passed", emoji: "✅", color: "#059669", tone: "success" as EmailTone };
   }
   if (event === "job.fail") {
-    return { label: "Failed", emoji: "❌", color: "#dc2626" };
+    return { label: "Failed", emoji: "❌", color: "#dc2626", tone: "danger" as EmailTone };
   }
-  return { label: "Error", emoji: "⚠️", color: "#d97706" };
+  if (event === "contract.breach") {
+    return {
+      label: "Contract breach",
+      emoji: "🚨",
+      color: "#c2410c",
+      tone: "warning" as EmailTone,
+    };
+  }
+  if (event === "contract.regression") {
+    return {
+      label: "Regression",
+      emoji: "📉",
+      color: "#b45309",
+      tone: "warning" as EmailTone,
+    };
+  }
+  return { label: "Error", emoji: "⚠️", color: "#d97706", tone: "warning" as EmailTone };
 }
 
 function formatRto(seconds: number | null | undefined): string {
@@ -54,39 +81,68 @@ export function jobAlertHtml(ctx: {
 }): string {
   const meta = eventMeta(ctx.event);
   const runUrl = `${ctx.brand.appUrl}/workflows/${ctx.job.databaseId}/runs/${ctx.job.id}`;
+  const title =
+    ctx.event === "contract.breach"
+      ? `${meta.emoji} Recovery targets missed`
+      : ctx.event === "contract.regression"
+        ? `${meta.emoji} Recovery regression detected`
+        : `${meta.emoji} Restore drill ${meta.label.toLowerCase()}`;
+
+  const intro =
+    ctx.event === "contract.breach"
+      ? `<p style="margin:0 0 16px;">Checks passed for <strong>${escapeHtml(ctx.job.databaseName)}</strong>, but measured recovery time or data age exceeded your contract.</p>`
+      : ctx.event === "contract.regression"
+        ? `<p style="margin:0 0 16px;">Checks passed for <strong>${escapeHtml(ctx.job.databaseName)}</strong>, but RTO, RPO, or readiness score worsened compared to the prior drill.</p>`
+        : `<p style="margin:0 0 16px;">A restore drill finished for <strong>${escapeHtml(ctx.job.databaseName)}</strong>.</p>`;
 
   const bodyHtml = `
-    <p style="margin:0 0 16px;">
-      <strong>${escapeHtml(ctx.job.databaseName)}</strong> finished with status
-      <span style="color:${meta.color};font-weight:700;"> ${escapeHtml(ctx.job.status)}</span>.
-    </p>
-    <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:14px;">
-      <tr>
-        <td style="padding:8px 0;color:#64748b;width:120px;">RTO</td>
-        <td style="padding:8px 0;font-weight:600;">${formatRto(ctx.job.rtoSeconds)}</td>
-      </tr>
-      <tr>
-        <td style="padding:8px 0;color:#64748b;">Job</td>
-        <td style="padding:8px 0;font-family:ui-monospace,monospace;font-size:12px;">${escapeHtml(ctx.job.id)}</td>
-      </tr>
-      ${
-        ctx.job.finishedAt
-          ? `<tr><td style="padding:8px 0;color:#64748b;">Finished</td><td style="padding:8px 0;">${escapeHtml(ctx.job.finishedAt)}</td></tr>`
-          : ""
-      }
-      ${
-        ctx.job.errorMessage
-          ? `<tr><td style="padding:8px 0;color:#64748b;vertical-align:top;">Details</td><td style="padding:8px 0;color:#b45309;">${escapeHtml(ctx.job.errorMessage)}</td></tr>`
-          : ""
-      }
-    </table>`;
+    <p style="margin:0 0 14px;">${emailStatusBadge(meta.label, meta.tone)}</p>
+    ${intro}
+    ${emailMetricTiles([
+      { label: "Recovery time", value: formatRto(ctx.job.rtoSeconds) },
+      { label: "Result", value: ctx.job.status, tone: meta.tone },
+    ])}
+    ${emailKeyValueTable([
+      { label: "Workflow", value: ctx.job.databaseName },
+      { label: "Finished", value: ctx.job.finishedAt ? formatEmailDateTime(ctx.job.finishedAt) : "—" },
+      { label: "Run ID", value: ctx.job.id, mono: true },
+      ...(ctx.job.errorMessage
+        ? [
+            {
+              label:
+                ctx.event === "contract.breach" || ctx.event === "contract.regression"
+                  ? "Details"
+                  : "Details",
+              value: ctx.job.errorMessage,
+              valueColor: "#b45309",
+            },
+          ]
+        : []),
+    ])}
+    ${
+      ctx.event === "contract.breach" || ctx.event === "contract.regression"
+        ? emailCallout(
+            ctx.event === "contract.breach"
+              ? "Update your recovery contract or improve drill performance before your next scheduled run."
+              : "Investigate what changed since the last drill — schema drift, infra, or data volume often explain regression.",
+            "warning"
+          )
+        : ""
+    }`;
 
   return wrapEmailHtml({
     brand: ctx.brand,
-    eyebrow: "Restore drill",
-    title: `${meta.emoji} Drill ${meta.label.toLowerCase()}`,
+    eyebrow:
+      ctx.event === "contract.breach"
+        ? "SLA alert"
+        : ctx.event === "contract.regression"
+          ? "Regression alert"
+          : "Restore drill",
+    title,
     bodyHtml,
-    cta: { label: "View run details", url: runUrl },
+    cta: { label: "View run & evidence", url: runUrl },
+    secondaryCta: { label: "Open dashboard", url: ctx.brand.appUrl },
+    footerNote: "Alerts are sent when integrations subscribe to drill events.",
   });
 }
 
@@ -133,25 +189,55 @@ export function weeklyDigestHtml(input: {
   brand: EmailBrand;
 }): string {
   const pass = input.passRate7d != null ? `${input.passRate7d}%` : "—";
+  const passTone =
+    input.passRate7d == null
+      ? "neutral"
+      : input.passRate7d >= 90
+        ? "success"
+        : input.passRate7d >= 70
+          ? "warning"
+          : "danger";
 
   const bodyHtml = `
-    <p style="margin:0 0 16px;font-size:16px;font-weight:600;color:#0f172a;">
-      ${input.healthy}/${input.total} workflows healthy
-    </p>
-    <table width="100%" cellpadding="0" cellspacing="0" style="font-size:14px;border-collapse:collapse;">
-      <tr><td style="color:#64748b;padding:6px 0;">7-day pass rate</td><td style="font-weight:700;padding:6px 0;">${pass}</td></tr>
-      <tr><td style="color:#64748b;padding:6px 0;">Avg RTO (7d)</td><td style="font-weight:700;padding:6px 0;">${formatRto(input.avgRtoSeconds7d)}</td></tr>
-      <tr><td style="color:#64748b;padding:6px 0;">Needs attention</td><td style="padding:6px 0;">${input.warning}</td></tr>
-      <tr><td style="color:#64748b;padding:6px 0;">At risk</td><td style="color:#dc2626;font-weight:600;padding:6px 0;">${input.critical}</td></tr>
-      <tr><td style="color:#64748b;padding:6px 0;">Failures (24h)</td><td style="padding:6px 0;">${input.failures24h}</td></tr>
-    </table>`;
+    <p style="margin:0 0 6px;font-size:15px;color:#334155;">Here is how <strong>${escapeHtml(input.orgName)}</strong> performed this week.</p>
+    <p style="margin:0 0 18px;font-size:13px;color:#64748b;">Fleet posture, drill success rate, and recovery speed at a glance.</p>
+    ${emailHealthBar(input)}
+    ${emailMetricTiles([
+      { label: "Drills passed (7d)", value: pass, tone: passTone as EmailTone },
+      { label: "Avg recovery time", value: formatRto(input.avgRtoSeconds7d) },
+      {
+        label: "Failures (24h)",
+        value: String(input.failures24h),
+        tone: input.failures24h > 0 ? "danger" : "success",
+      },
+    ])}
+    ${emailKeyValueTable([
+      { label: "Healthy workflows", value: String(input.healthy) },
+      { label: "Need attention", value: String(input.warning) },
+      { label: "At risk", value: String(input.critical), valueColor: input.critical > 0 ? "#dc2626" : undefined },
+      { label: "Total tracked", value: String(input.total) },
+    ])}
+    ${
+      input.total === 0
+        ? ""
+        : input.critical > 0 || input.failures24h > 0
+          ? emailCallout(
+              "Some workflows need a restore drill or configuration fix. Open the dashboard to see which ones.",
+              "warning"
+            )
+          : emailCallout(
+              "Your fleet looks healthy. Keep the weekly schedule running for continuous proof.",
+              "success"
+            )
+    }`;
 
   return wrapEmailHtml({
     brand: input.brand,
     eyebrow: "Weekly digest",
-    title: input.orgName,
+    title: "Your recovery posture",
     bodyHtml,
-    cta: { label: "Open dashboard", url: input.brand.appUrl },
+    cta: { label: "Review fleet dashboard", url: input.brand.appUrl },
+    footerNote: "Sent every Monday to organization admins.",
   });
 }
 
@@ -171,9 +257,57 @@ export function passwordResetHtml(resetUrl: string, brand: EmailBrand): string {
     brand,
     eyebrow: "Account security",
     title: "Reset your password",
-    bodyHtml: `<p style="margin:0;">Click the button below to choose a new password. This link expires in one hour.</p>
-      <p style="margin:16px 0 0;font-size:13px;color:#64748b;">If you didn&apos;t request this, you can safely ignore this email.</p>`,
+    bodyHtml: `
+      <p style="margin:0 0 12px;">We received a request to reset the password for your Revenant Cloud account.</p>
+      <ol style="margin:0;padding-left:20px;color:#475569;font-size:14px;line-height:1.7;">
+        <li>Click the button below (valid for <strong>1 hour</strong>).</li>
+        <li>Choose a new password on the secure page.</li>
+        <li>Sign in again with your new credentials.</li>
+      </ol>
+      ${emailCallout("If you did not request this, ignore this email — your password will not change.", "info")}`,
     cta: { label: "Reset password", url: resetUrl },
+    footerNote: "For security, this link can only be used once.",
+  });
+}
+
+export function teamInvitePlainText(input: {
+  organizationName: string;
+  role: string;
+  inviteUrl: string;
+  expiresAt: string;
+}): string {
+  return [
+    `You're invited to ${input.organizationName} on Revenant Cloud`,
+    "",
+    `Role: ${input.role}`,
+    "",
+    "Accept the invite (expires in 7 days):",
+    input.inviteUrl,
+    "",
+    `Expires: ${input.expiresAt}`,
+  ].join("\n");
+}
+
+export function teamInviteHtml(input: {
+  brand: EmailBrand;
+  organizationName: string;
+  role: string;
+  inviteUrl: string;
+  expiresAt: string;
+}): string {
+  return wrapEmailHtml({
+    brand: input.brand,
+    eyebrow: "Team invite",
+    title: `Join ${input.organizationName}`,
+    bodyHtml: `
+      <p style="margin:0 0 14px;">You've been invited to collaborate on restore drills and evidence for <strong>${escapeHtml(input.organizationName)}</strong>.</p>
+      ${emailMetricTiles([
+        { label: "Organization", value: input.organizationName },
+        { label: "Your role", value: input.role },
+      ])}
+      ${emailCallout(`This invite expires on ${formatEmailDateTime(input.expiresAt)}.`, "info")}`,
+    cta: { label: "Accept invite", url: input.inviteUrl },
+    footerNote: "Revenant helps teams prove backups actually restore.",
   });
 }
 
@@ -257,12 +391,19 @@ export function buildSlackJobBlocks(ctx: {
   const appUrl = ctx.appUrl ?? "http://localhost:5173";
   const runUrl = `${appUrl}/workflows/${ctx.job.databaseId}/runs/${ctx.job.id}`;
 
+  const headerText =
+    ctx.event === "contract.breach"
+      ? `${meta.emoji} Recovery contract breach`
+      : ctx.event === "contract.regression"
+        ? `${meta.emoji} Recovery regression`
+        : `${meta.emoji} Restore drill ${meta.label}`;
+
   return {
     text: `${meta.emoji} ${ctx.job.databaseName} — ${meta.label} (RTO ${formatRto(ctx.job.rtoSeconds)})`,
     blocks: [
       {
         type: "header",
-        text: { type: "plain_text", text: `${meta.emoji} Restore drill ${meta.label}`, emoji: true },
+        text: { type: "plain_text", text: headerText, emoji: true },
       },
       {
         type: "section",

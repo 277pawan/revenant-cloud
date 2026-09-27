@@ -8,5 +8,8 @@ export function isMissingRelationError(err: unknown): boolean {
 }
 
 export function migrationRequiredMessage(feature: string): string {
-  return `${feature} requires database migration 0016_recovery_readiness. Run: npm run db:migrate -w @revenant/api`;
+  const migration = feature.toLowerCase().includes("recovery point")
+    ? "0023_recovery_points"
+    : "0016_recovery_readiness";
+  return `${feature} requires database migration ${migration}. Run: npm run db:migrate -w @revenant/api`;
 }

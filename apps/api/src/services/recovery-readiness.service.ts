@@ -5,9 +5,13 @@ import {
   type DriftSeverity,
   type RecoveryContractDefinition,
   type RecoveryReadinessResource,
+  type RecoveryVerifiedPoint,
   buildReadinessDimensionsFromJob,
   computeRecoveryReadiness,
+  detectRecoveryRegression,
   extractRpoObservedSeconds,
+  isFullRecoveryReadiness,
+  recoveryPointLabelFromJob,
 } from "@revenant/shared";
 import type { Database } from "../db/index.js";
 import {
@@ -15,6 +19,7 @@ import {
   jobResults,
   jobs,
   recoveryContracts,
+  readinessSnapshots,
   recoveryDriftEvents,
   recoveryFingerprints,
   schedules,
@@ -62,7 +67,7 @@ export function createRecoveryReadinessService(db: Database) {
         .where(eq(schedules.databaseId, databaseId))
         .limit(1);
 
-      const [lastPassJob] = await db
+      const passJobs = await db
         .select()
         .from(jobs)
         .where(
@@ -73,7 +78,9 @@ export function createRecoveryReadinessService(db: Database) {
           )
         )
         .orderBy(desc(jobs.finishedAt))
-        .limit(1);
+        .limit(2);
+
+      const [lastPassJob, previousPassJob] = passJobs;
 
       const [lastJob] = await db
         .select()
@@ -84,7 +91,8 @@ export function createRecoveryReadinessService(db: Database) {
         .orderBy(desc(jobs.finishedAt))
         .limit(1);
 
-      const jobForReadiness = lastPassJob ?? lastJob;
+      // Score reflects the latest drill (pass or fail), not an older passing run.
+      const jobForReadiness = lastJob;
 
       const results =
         jobForReadiness
@@ -163,20 +171,137 @@ export function createRecoveryReadinessService(db: Database) {
         driftStatus,
         driftSummary,
         lastVerifiedAt: lastPassJob?.finishedAt?.toISOString() ?? null,
-        rtoActualSeconds: lastPassJob?.rtoSeconds ?? null,
+        latestDrillStatus: lastJob?.status ?? null,
+        latestDrillAt:
+          lastJob?.finishedAt?.toISOString() ?? lastJob?.createdAt?.toISOString() ?? null,
+        rtoActualSeconds: jobForReadiness?.rtoSeconds ?? null,
         rpoObservedSeconds,
       });
+
+      let previousRpo: number | null = null;
+      if (previousPassJob) {
+        const prevResults = await db
+          .select()
+          .from(jobResults)
+          .where(eq(jobResults.jobId, previousPassJob.id));
+        previousRpo = extractRpoObservedSeconds(
+          prevResults.map((r) => ({
+            checkType: r.checkType,
+            status: r.status,
+            message: r.message,
+          }))
+        );
+      }
+
+      const regression = detectRecoveryRegression({
+        current: {
+          jobId: lastPassJob?.id,
+          finishedAt: lastPassJob?.finishedAt?.toISOString() ?? null,
+          rtoSeconds: lastPassJob?.rtoSeconds ?? null,
+          rpoObservedSeconds,
+          score: readiness.score,
+        },
+        previous: previousPassJob
+          ? {
+              jobId: previousPassJob.id,
+              finishedAt: previousPassJob.finishedAt?.toISOString() ?? null,
+              rtoSeconds: previousPassJob.rtoSeconds,
+              rpoObservedSeconds: previousRpo,
+            }
+          : null,
+      });
+
+      if (regression.detected) {
+        readiness.regression = regression;
+        readiness.risks.push({
+          severity: regression.severity === "critical" ? "critical" : "warning",
+          message: `Regression vs prior drill: ${regression.message}`,
+        });
+        readiness.dimensions.push({
+          id: "regression",
+          label: "Recovery regression",
+          status: regression.severity === "critical" ? "fail" : "warn",
+          detail: regression.message ?? undefined,
+          weight: 0,
+        });
+      } else {
+        readiness.regression = regression;
+      }
+
+      const lastVerifiedRecoveryPoint = await findLastVerifiedRecoveryPoint(
+        db,
+        organizationId,
+        databaseId
+      );
 
       return {
         databaseId: dbRow.id,
         databaseName: dbRow.name,
         contractVersion: contractRow?.version ?? 0,
         readiness,
+        lastVerifiedRecoveryPoint,
         providers: [...RECOVERY_PROVIDERS],
       };
     },
 
   };
+}
+
+async function findLastVerifiedRecoveryPoint(
+  db: Database,
+  organizationId: string,
+  databaseId: string
+): Promise<RecoveryVerifiedPoint | null> {
+  const rows = await db
+    .select({
+      snapshot: readinessSnapshots,
+      job: jobs,
+    })
+    .from(readinessSnapshots)
+    .innerJoin(jobs, eq(jobs.id, readinessSnapshots.jobId))
+    .where(
+      and(
+        eq(readinessSnapshots.organizationId, organizationId),
+        eq(readinessSnapshots.databaseId, databaseId),
+        eq(jobs.status, "pass")
+      )
+    )
+    .orderBy(desc(readinessSnapshots.recordedAt))
+    .limit(50);
+
+  for (const row of rows) {
+    if (!isFullRecoveryReadiness(row.snapshot.status, row.snapshot.score)) {
+      continue;
+    }
+
+    const results = await db
+      .select()
+      .from(jobResults)
+      .where(eq(jobResults.jobId, row.job.id));
+
+    const measured = results.filter((r) => r.status !== "skip");
+    const failed = measured.filter((r) => r.status === "fail").length;
+    const snapshotResult = results.find((r) => r.checkType === "snapshot");
+
+    return {
+      jobId: row.job.id,
+      verifiedAt:
+        row.job.finishedAt?.toISOString() ?? row.snapshot.recordedAt.toISOString(),
+      score: row.snapshot.score,
+      status: row.snapshot.status,
+      rtoSeconds: row.snapshot.rtoActualSeconds,
+      rpoObservedSeconds: row.snapshot.rpoObservedSeconds,
+      recoveryPointLabel: recoveryPointLabelFromJob(
+        row.job.trigger,
+        snapshotResult?.message
+      ),
+      trigger: row.job.trigger,
+      checksPassed: measured.length - failed,
+      checksTotal: measured.length,
+    };
+  }
+
+  return null;
 }
 
 export type RecoveryReadinessService = ReturnType<

@@ -1,4 +1,4 @@
-import { and, count, eq, inArray } from "drizzle-orm";
+import { and, count, eq, inArray, lt, or, sql } from "drizzle-orm";
 import {
   getPlanDefinition,
   type OrganizationPlan,
@@ -96,6 +96,59 @@ export async function countPlanResource(
   }
 }
 
+const PENDING_STALE_MS = 30 * 60 * 1000;
+const RUNNING_STALE_MS = 2 * 60 * 60 * 1000;
+
+/** Fail drills stuck in queue or execution — frees Starter's one-at-a-time slot. */
+export async function reapStaleRestoreDrills(
+  db: Database,
+  organizationId: string
+): Promise<number> {
+  const pendingCutoff = new Date(Date.now() - PENDING_STALE_MS);
+  const runningCutoff = new Date(Date.now() - RUNNING_STALE_MS);
+  const now = new Date();
+
+  const pending = await db
+    .update(jobs)
+    .set({
+      status: "error",
+      errorMessage:
+        "No runner picked up this drill within 30 minutes. Start the Revenant agent (Settings → Runners) or enable the embedded API runner, then try again.",
+      finishedAt: now,
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(jobs.organizationId, organizationId),
+        eq(jobs.status, "pending"),
+        lt(jobs.createdAt, pendingCutoff)
+      )
+    )
+    .returning({ id: jobs.id });
+
+  const running = await db
+    .update(jobs)
+    .set({
+      status: "error",
+      errorMessage: "Drill timed out after 2 hours without finishing.",
+      finishedAt: now,
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(jobs.organizationId, organizationId),
+        eq(jobs.status, "running"),
+        or(
+          lt(jobs.startedAt, runningCutoff),
+          and(sql`${jobs.startedAt} is null`, lt(jobs.createdAt, runningCutoff))
+        )
+      )
+    )
+    .returning({ id: jobs.id });
+
+  return pending.length + running.length;
+}
+
 /** Pending/running restore drills (org-wide cap). */
 export async function countActiveRestoreDrills(
   db: Database,
@@ -113,6 +166,30 @@ export async function countActiveRestoreDrills(
   return Number(row?.value ?? 0);
 }
 
+export async function listActiveRestoreDrills(
+  db: Database,
+  organizationId: string
+) {
+  return db
+    .select({
+      id: jobs.id,
+      databaseId: jobs.databaseId,
+      status: jobs.status,
+      trigger: jobs.trigger,
+      createdAt: jobs.createdAt,
+      databaseName: databases.name,
+    })
+    .from(jobs)
+    .innerJoin(databases, eq(databases.id, jobs.databaseId))
+    .where(
+      and(
+        eq(jobs.organizationId, organizationId),
+        inArray(jobs.status, ["pending", "running"])
+      )
+    )
+    .orderBy(jobs.createdAt);
+}
+
 export async function assertParallelRestoreDrills(
   db: Database,
   organizationId: string
@@ -122,11 +199,17 @@ export async function assertParallelRestoreDrills(
   const limit = plan.limits.parallelRestoreDrills;
   if (limit == null) return;
 
+  await reapStaleRestoreDrills(db, organizationId);
+
   const active = await countActiveRestoreDrills(db, organizationId);
   if (active >= limit) {
+    const blockers = await listActiveRestoreDrills(db, organizationId);
+    const hint = blockers[0]
+      ? ` Queued drill: ${blockers[0].databaseName} (${blockers[0].status}, run ${blockers[0].id.slice(0, 8)}…). Cancel it from the run page or wait for your agent to finish.`
+      : "";
     throw createAppError(
       403,
-      messageParallelDrillLimit(planId, limit),
+      messageParallelDrillLimit(planId, limit) + hint,
       "PLAN_LIMIT"
     );
   }

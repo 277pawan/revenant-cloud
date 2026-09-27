@@ -47,7 +47,7 @@ export interface BillingCreateOrderResponse {
   keyId: string;
   description: string;
   plan: OrganizationPlan;
-  purpose: "autopay_setup";
+  purpose: "autopay_setup" | "pro_upgrade";
   trialEndsAt?: string | null;
   recurringAmountInr?: number;
 }
@@ -62,6 +62,7 @@ export interface BillingVerifyPaymentRequest {
 export interface BillingVerifyPaymentResponse {
   ok: true;
   autopaySetup: boolean;
+  checkoutPurpose?: "autopay_setup" | "pro_upgrade";
 }
 
 /** Cloud dashboard requires ₹1 autopay setup on the marketing site first. */

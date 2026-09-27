@@ -27,6 +27,50 @@ export interface RecoveryRisk {
   message: string;
 }
 
+export type RegressionSeverity = "none" | "warning" | "critical";
+
+export interface RecoveryRegressionMetricDelta {
+  previous: number;
+  current: number;
+  deltaSeconds: number;
+  deltaPercent: number;
+}
+
+export interface RecoveryRegressionInfo {
+  detected: boolean;
+  severity: RegressionSeverity;
+  message: string | null;
+  rto?: RecoveryRegressionMetricDelta;
+  rpo?: RecoveryRegressionMetricDelta;
+  score?: { previous: number; current: number; delta: number };
+  comparedJobId?: string;
+  comparedAt?: string;
+}
+
+/** Last drill that achieved full recovery readiness — use this snapshot/point to restore. */
+export interface RecoveryVerifiedPoint {
+  jobId: string;
+  verifiedAt: string;
+  score: number;
+  status: ReadinessOverallStatus | string;
+  rtoSeconds: number | null;
+  rpoObservedSeconds: number | null;
+  /** Human label: RDS snapshot id, verify path, etc. */
+  recoveryPointLabel: string;
+  trigger: string;
+  checksPassed: number;
+  checksTotal: number;
+}
+
+export interface RecoveryGateResult {
+  allowed: boolean;
+  status: ReadinessOverallStatus;
+  score: number;
+  minScore: number;
+  blockers: string[];
+  checkedAt: string;
+}
+
 export interface RecoveryReadinessResult {
   score: number;
   status: ReadinessOverallStatus;
@@ -36,9 +80,13 @@ export interface RecoveryReadinessResult {
   rtoActualSeconds: number | null;
   rpoTargetSeconds: number | null;
   rpoObservedSeconds: number | null;
+  /** Last passing drill — may be older than the latest drill. */
   lastVerifiedAt: string | null;
+  latestDrillStatus: string | null;
+  latestDrillAt: string | null;
   driftStatus: DriftSeverity;
   driftSummary: string | null;
+  regression: RecoveryRegressionInfo | null;
 }
 
 const STATUS_SCORE: Record<ReadinessDimensionStatus, number> = {
@@ -55,6 +103,8 @@ export function computeRecoveryReadiness(input: {
   driftStatus?: DriftSeverity;
   driftSummary?: string | null;
   lastVerifiedAt?: string | null;
+  latestDrillStatus?: string | null;
+  latestDrillAt?: string | null;
   rtoActualSeconds?: number | null;
   rpoObservedSeconds?: number | null;
 }): RecoveryReadinessResult {
@@ -92,13 +142,24 @@ export function computeRecoveryReadiness(input: {
   }
 
   const hasFail = input.dimensions.some((d) => d.status === "fail");
+  const latestFailed =
+    input.latestDrillStatus != null &&
+    input.latestDrillStatus !== "pass" &&
+    input.latestDrillStatus !== "cancelled";
+
+  if (latestFailed) {
+    risks.unshift({
+      severity: "critical",
+      message: `Latest drill ${input.latestDrillStatus} — fix validation failures before deploy`,
+    });
+  }
 
   // Overall tag reflects recovery capability (score + hard failures), not advisory gaps like
   // missing schedules or unmeasured RPO. Those stay visible in dimension rows and risks.
   let status: ReadinessOverallStatus = "unknown";
-  if (!input.lastVerifiedAt) {
+  if (!input.lastVerifiedAt && !input.latestDrillAt) {
     status = "unknown";
-  } else if (hasFail || input.driftStatus === "recovery_invalidated") {
+  } else if (latestFailed || hasFail || input.driftStatus === "recovery_invalidated") {
     status = "not_ready";
   } else if (input.driftStatus === "recovery_at_risk" || score < 55) {
     status = "at_risk";
@@ -118,8 +179,186 @@ export function computeRecoveryReadiness(input: {
     rpoTargetSeconds,
     rpoObservedSeconds: input.rpoObservedSeconds ?? null,
     lastVerifiedAt: input.lastVerifiedAt ?? null,
+    latestDrillStatus: input.latestDrillStatus ?? null,
+    latestDrillAt: input.latestDrillAt ?? null,
     driftStatus: input.driftStatus ?? "stable",
     driftSummary: input.driftSummary ?? null,
+    regression: null,
+  };
+}
+
+const DEFAULT_REGRESSION_THRESHOLD_PERCENT = 10;
+
+function metricDelta(
+  previous: number,
+  current: number
+): RecoveryRegressionMetricDelta | null {
+  if (current <= previous) return null;
+  const deltaSeconds = current - previous;
+  const deltaPercent = previous > 0 ? Math.round((deltaSeconds / previous) * 100) : 100;
+  return { previous, current, deltaSeconds, deltaPercent };
+}
+
+/** Compare the latest passing drill to the prior one — surfaces RTO/RPO/score regression. */
+export function detectRecoveryRegression(input: {
+  current: {
+    jobId?: string;
+    finishedAt?: string | null;
+    rtoSeconds: number | null;
+    rpoObservedSeconds: number | null;
+    score?: number | null;
+  };
+  previous: {
+    jobId?: string;
+    finishedAt?: string | null;
+    rtoSeconds: number | null;
+    rpoObservedSeconds: number | null;
+    score?: number | null;
+  } | null;
+  thresholdPercent?: number;
+}): RecoveryRegressionInfo {
+  const threshold = input.thresholdPercent ?? DEFAULT_REGRESSION_THRESHOLD_PERCENT;
+
+  if (!input.previous) {
+    return { detected: false, severity: "none", message: null };
+  }
+
+  const rto =
+    input.current.rtoSeconds != null && input.previous.rtoSeconds != null
+      ? metricDelta(input.previous.rtoSeconds, input.current.rtoSeconds)
+      : null;
+  const rpo =
+    input.current.rpoObservedSeconds != null && input.previous.rpoObservedSeconds != null
+      ? metricDelta(input.previous.rpoObservedSeconds, input.current.rpoObservedSeconds)
+      : null;
+
+  const scoreDelta =
+    input.current.score != null && input.previous.score != null
+      ? input.current.score - input.previous.score
+      : null;
+
+  const rtoRegression =
+    rto != null && (rto.deltaPercent >= threshold || rto.deltaSeconds >= 30);
+  const rpoRegression =
+    rpo != null && (rpo.deltaPercent >= threshold || rpo.deltaSeconds >= 30);
+  const scoreRegression = scoreDelta != null && scoreDelta <= -10;
+
+  if (!rtoRegression && !rpoRegression && !scoreRegression) {
+    return { detected: false, severity: "none", message: null };
+  }
+
+  const parts: string[] = [];
+  if (rtoRegression && rto) {
+    parts.push(`RTO worsened ${rto.deltaSeconds}s (+${rto.deltaPercent}%)`);
+  }
+  if (rpoRegression && rpo) {
+    parts.push(`RPO lag worsened ${rpo.deltaSeconds}s (+${rpo.deltaPercent}%)`);
+  }
+  if (scoreRegression && scoreDelta != null && input.previous.score != null) {
+    parts.push(`Readiness score dropped ${Math.abs(scoreDelta)} pts (${input.previous.score}→${input.current.score})`);
+  }
+
+  const severity: RegressionSeverity =
+    rtoRegression || rpoRegression ? "critical" : "warning";
+
+  return {
+    detected: true,
+    severity,
+    message: parts.join(" · "),
+    ...(rtoRegression && rto ? { rto } : {}),
+    ...(rpoRegression && rpo ? { rpo } : {}),
+    ...(scoreRegression &&
+    scoreDelta != null &&
+    input.previous.score != null &&
+    input.current.score != null
+      ? {
+          score: {
+            previous: input.previous.score,
+            current: input.current.score,
+            delta: scoreDelta,
+          },
+        }
+      : {}),
+    comparedJobId: input.previous.jobId,
+    comparedAt: input.previous.finishedAt ?? undefined,
+  };
+}
+
+const FULL_READINESS_SCORE = 80;
+
+export function isFullRecoveryReadiness(
+  status: string,
+  score: number
+): boolean {
+  return status === "recovery_ready" || score >= FULL_READINESS_SCORE;
+}
+
+/** Label for which backup/snapshot was proven in a drill. */
+export function recoveryPointLabelFromJob(
+  trigger: string,
+  snapshotCheckMessage?: string | null
+): string {
+  if (snapshotCheckMessage) {
+    const snapId = snapshotCheckMessage.match(
+      /(snap-[a-z0-9-]+|rds:[a-z0-9-]+)/i
+    )?.[1];
+    if (snapId) return `RDS snapshot ${snapId}`;
+    const trimmed = snapshotCheckMessage.trim();
+    if (trimmed.length > 0 && trimmed.length <= 120) return trimmed;
+  }
+  if (trigger === "full-drill" || trigger === "schedule") {
+    return "RDS snapshot captured at drill time";
+  }
+  if (trigger === "manual") {
+    return "Latest snapshot / live connection verify";
+  }
+  return "Verified restore point";
+}
+
+/** CI/CD gate — block deploy when recovery is unknown, failing, or below score floor. */
+export function evaluateRecoveryGate(
+  readiness: RecoveryReadinessResult,
+  options?: { minScore?: number }
+): RecoveryGateResult {
+  const minScore = options?.minScore ?? 70;
+  const blockers: string[] = [];
+
+  if (!readiness.lastVerifiedAt) {
+    blockers.push("No passing restore drill yet");
+  }
+  if (readiness.status === "not_ready") {
+    blockers.push("Workflow is not recovery-ready");
+  }
+  if (readiness.score < minScore) {
+    blockers.push(`Readiness score ${readiness.score} is below minimum ${minScore}`);
+  }
+
+  for (const dim of readiness.dimensions) {
+    if (dim.status === "fail") {
+      blockers.push(`${dim.label} failed`);
+    }
+  }
+
+  if (readiness.regression?.detected && readiness.regression.severity === "critical") {
+    blockers.push(readiness.regression.message ?? "Recovery regression detected");
+  }
+
+  if (readiness.driftStatus === "recovery_invalidated") {
+    blockers.push(readiness.driftSummary ?? "Recovery capability invalidated by drift");
+  }
+
+  const allowed =
+    blockers.length === 0 &&
+    readiness.status !== "unknown" &&
+    readiness.status !== "not_ready";
+
+  return {
+    allowed,
+    status: readiness.status,
+    score: readiness.score,
+    minScore,
+    blockers,
+    checkedAt: new Date().toISOString(),
   };
 }
 
@@ -155,6 +394,35 @@ export function parseGoDurationToken(token: string): number | null {
     else total += value;
   }
   return matched ? Math.round(total) : null;
+}
+
+/** Human-readable breach lines when a passing drill missed contract RTO/RPO targets. */
+export function detectRecoveryContractBreaches(input: {
+  rtoTargetSeconds: number | null;
+  rtoActualSeconds: number | null;
+  rpoTargetSeconds: number | null;
+  rpoObservedSeconds: number | null;
+}): string[] {
+  const messages: string[] = [];
+  if (
+    input.rtoTargetSeconds != null &&
+    input.rtoActualSeconds != null &&
+    input.rtoActualSeconds > input.rtoTargetSeconds
+  ) {
+    messages.push(
+      `RTO ${input.rtoActualSeconds}s exceeds contract target ${input.rtoTargetSeconds}s`
+    );
+  }
+  if (
+    input.rpoTargetSeconds != null &&
+    input.rpoObservedSeconds != null &&
+    input.rpoObservedSeconds > input.rpoTargetSeconds
+  ) {
+    messages.push(
+      `RPO ${input.rpoObservedSeconds}s exceeds contract target ${input.rpoTargetSeconds}s`
+    );
+  }
+  return messages;
 }
 
 /** Observed RPO from freshness checks — max data lag on last drill. */
@@ -216,28 +484,34 @@ export function buildReadinessDimensionsFromJob(input: {
   }
 
   let schemaStatus: ReadinessDimensionStatus = "unknown";
+  let schemaDetail: string | undefined;
   if (!input.contract.recovery.required.schema) {
     schemaStatus = "not_configured";
   } else if (!input.hasValidationPlan) {
     schemaStatus = "warn";
-    restoreDetail = "No validation plan";
+    schemaDetail = "No validation plan";
   } else if (schemaPass === true) {
     schemaStatus = "pass";
   } else if (schemaPass === false) {
     schemaStatus = "fail";
+    schemaDetail = `${schemaChecks.filter((c) => c.status === "fail").length} schema check(s) failed`;
   } else if (input.lastJobStatus === "pass") {
-    schemaStatus = "pass";
+    schemaStatus = "warn";
+    schemaDetail = "No schema checks in validation plan";
   }
 
   let queriesStatus: ReadinessDimensionStatus = "unknown";
+  let queriesDetail: string | undefined;
   if (!input.contract.recovery.required.critical_queries) {
     queriesStatus = "not_configured";
   } else if (queriesPass === true) {
     queriesStatus = "pass";
   } else if (queriesPass === false) {
     queriesStatus = "fail";
+    queriesDetail = `${queryChecks.filter((c) => c.status === "fail").length} query check(s) failed`;
   } else if (input.lastJobStatus === "pass") {
-    queriesStatus = "pass";
+    queriesStatus = "warn";
+    queriesDetail = "No query/freshness checks in validation plan";
   }
 
   let rtoStatus: ReadinessDimensionStatus = "unknown";
@@ -351,10 +625,28 @@ export function buildReadinessDimensionsFromJob(input: {
     rpoDetail = `${input.rpoObservedSeconds}s lag exceeds ${rpoTarget}s target`;
   }
 
+  const measuredChecks = input.checkResults.filter((r) => r.status !== "skip");
+  const failedChecks = measuredChecks.filter((r) => r.status === "fail");
+  let yamlChecksStatus: ReadinessDimensionStatus = "unknown";
+  let yamlChecksDetail = "No validation checks ran";
+  if (measuredChecks.length === 0) {
+    if (input.lastJobStatus === "fail" || input.lastJobStatus === "error") {
+      yamlChecksStatus = "fail";
+      yamlChecksDetail = "Drill failed with no check results";
+    }
+  } else if (failedChecks.length === 0) {
+    yamlChecksStatus = "pass";
+    yamlChecksDetail = `${measuredChecks.length}/${measuredChecks.length} YAML checks passed`;
+  } else {
+    yamlChecksStatus = "fail";
+    yamlChecksDetail = `${failedChecks.length}/${measuredChecks.length} YAML checks failed`;
+  }
+
   return [
     { id: "database_restore", label: "Database restore", status: restoreStatus, detail: restoreDetail, weight: 15 },
-    { id: "schema_integrity", label: "Schema integrity", status: schemaStatus, weight: 12 },
-    { id: "critical_queries", label: "Critical queries", status: queriesStatus, weight: 12 },
+    { id: "validation_checks", label: "Validation plan checks", status: yamlChecksStatus, detail: yamlChecksDetail, weight: 14 },
+    { id: "schema_integrity", label: "Schema integrity", status: schemaStatus, detail: schemaDetail, weight: 12 },
+    { id: "critical_queries", label: "Critical queries", status: queriesStatus, detail: queriesDetail, weight: 12 },
     { id: "application_health", label: "Application health", status: appStatus, detail: appDetail, weight: 10 },
     { id: "rto", label: "RTO", status: rtoStatus, detail: rtoDetail, weight: 15 },
     { id: "rpo", label: "RPO", status: rpoStatus, detail: rpoDetail, weight: 8 },

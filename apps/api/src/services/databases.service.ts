@@ -136,9 +136,14 @@ export function createDatabasesService(db: Database, masterKey: string) {
     organizationId: string,
     databaseId: string,
     accessKeyId: string,
-    secretAccessKey: string
+    secretAccessKey: string,
+    sessionToken?: string
   ): Promise<void> {
-    const payload = JSON.stringify({ accessKeyId, secretAccessKey });
+    const payload = JSON.stringify({
+      accessKeyId,
+      secretAccessKey,
+      ...(sessionToken ? { sessionToken } : {}),
+    });
     const encrypted = encryptSecret(payload, masterKey);
     const existing = await db
       .select({ id: databaseAwsCredentials.id })
@@ -172,6 +177,7 @@ export function createDatabasesService(db: Database, masterKey: string) {
   async function decryptAwsCredentials(databaseId: string): Promise<{
     accessKeyId: string;
     secretAccessKey: string;
+    sessionToken?: string;
   } | null> {
     const cred = await db
       .select()
@@ -192,6 +198,7 @@ export function createDatabasesService(db: Database, masterKey: string) {
     const parsed = JSON.parse(json) as {
       accessKeyId?: string;
       secretAccessKey?: string;
+      sessionToken?: string;
     };
     if (!parsed.accessKeyId || !parsed.secretAccessKey) {
       return null;
@@ -199,6 +206,7 @@ export function createDatabasesService(db: Database, masterKey: string) {
     return {
       accessKeyId: parsed.accessKeyId,
       secretAccessKey: parsed.secretAccessKey,
+      ...(parsed.sessionToken ? { sessionToken: parsed.sessionToken } : {}),
     };
   }
 
@@ -311,7 +319,8 @@ export function createDatabasesService(db: Database, masterKey: string) {
           organizationId,
           row.id,
           input.awsAccessKeyId,
-          input.awsSecretAccessKey
+          input.awsSecretAccessKey,
+          input.awsSessionToken || undefined
         );
       }
 
@@ -370,7 +379,8 @@ export function createDatabasesService(db: Database, masterKey: string) {
           organizationId,
           id,
           input.awsAccessKeyId,
-          input.awsSecretAccessKey
+          input.awsSecretAccessKey,
+          input.awsSessionToken || undefined
         );
       }
 

@@ -100,6 +100,32 @@ export function createWebhooksHandlers(
       }
     },
 
+    sendTest: async (request: FastifyRequest, reply: FastifyReply) => {
+      const params = webhookIdParamSchema.safeParse(request.params);
+      if (!params.success) {
+        return reply
+          .status(400)
+          .send({ error: "Invalid webhook id", code: "VALIDATION_ERROR" });
+      }
+
+      try {
+        const result = await webhooksService.sendTest(
+          request.user.organizationId,
+          params.data.id
+        );
+        await auditService.log({
+          organizationId: request.user.organizationId,
+          actorUserId: request.user.id,
+          action: "webhook.test",
+          resourceType: "webhook",
+          resourceId: params.data.id,
+        });
+        return result;
+      } catch (err) {
+        return sendHandlerError(err, request, reply, "Failed to send test alert");
+      }
+    },
+
     remove: async (request: FastifyRequest, reply: FastifyReply) => {
       const params = webhookIdParamSchema.safeParse(request.params);
       if (!params.success) {

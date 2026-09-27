@@ -1,7 +1,7 @@
 import { and, count, desc, eq, ne } from "drizzle-orm";
 import type { Paginated, TeamMemberResource, UserRole } from "@revenant/shared";
 import type { Database } from "../db/index.js";
-import { organizationInvites, users } from "../db/schema.js";
+import { organizationInvites, organizations, users } from "../db/schema.js";
 import { createAppError } from "../lib/errors.js";
 import { assertPlanLimit } from "../lib/plan-limits.js";
 import {
@@ -18,6 +18,12 @@ import {
   type PaginationQueryInput,
 } from "../validations/pagination.schema.js";
 import type { Env } from "../config/env.js";
+import { resolveEmailBrand } from "../lib/email-layout.js";
+import {
+  teamInviteHtml,
+  teamInvitePlainText,
+} from "../lib/notification-templates.js";
+import { sendTransactionalMail } from "../lib/transactional-mail.js";
 
 function toMember(row: typeof users.$inferSelect): TeamMemberResource {
   return {
@@ -128,11 +134,40 @@ export function createTeamService(db: Database, env: Env) {
 
       const inviteUrl = `${env.PUBLIC_APP_URL}/login?invite=${encodeURIComponent(token)}`;
 
+      const [orgRow] = await db
+        .select({ name: organizations.name })
+        .from(organizations)
+        .where(eq(organizations.id, organizationId))
+        .limit(1);
+
+      const organizationName = orgRow?.name ?? "your organization";
+      const expiresAtIso = expiresAt.toISOString();
+
+      void sendTransactionalMail(env, {
+        to: input.email.toLowerCase(),
+        subject: `You're invited to ${organizationName} on Revenant`,
+        text: teamInvitePlainText({
+          organizationName,
+          role: input.role,
+          inviteUrl,
+          expiresAt: expiresAtIso,
+        }),
+        html: teamInviteHtml({
+          brand: resolveEmailBrand(env),
+          organizationName,
+          role: input.role,
+          inviteUrl,
+          expiresAt: expiresAtIso,
+        }),
+      }).catch((err) => {
+        console.error("[mail] team invite email failed:", err);
+      });
+
       return {
         inviteUrl,
         email: input.email.toLowerCase(),
         role: input.role,
-        expiresAt: expiresAt.toISOString(),
+        expiresAt: expiresAtIso,
       };
     },
 

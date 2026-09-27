@@ -30,6 +30,12 @@ export async function webhooksRoutes(
     handlers.update
   );
 
+  app.post(
+    "/webhooks/:id/test",
+    { preHandler: requirePermission("webhooks:write") },
+    handlers.sendTest
+  );
+
   app.delete(
     "/webhooks/:id",
     { preHandler: requirePermission("webhooks:write") },

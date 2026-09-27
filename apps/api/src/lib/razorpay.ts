@@ -1,12 +1,22 @@
 import crypto from "node:crypto";
 import Razorpay from "razorpay";
-import { PRO_PRICE_INR, STARTER_PRICE_INR, type OrganizationPlan } from "@revenant/shared";
+import {
+  PRO_PRICE_INR,
+  STARTER_PRICE_INR,
+  type OrganizationPlan,
+} from "@revenant/shared";
 
-export function createRazorpayClient(keyId: string, keySecret: string): Razorpay {
+export function createRazorpayClient(
+  keyId: string,
+  keySecret: string,
+): Razorpay {
   return new Razorpay({ key_id: keyId, key_secret: keySecret });
 }
 
-export function isRazorpayConfigured(keyId?: string, keySecret?: string): boolean {
+export function isRazorpayConfigured(
+  keyId?: string,
+  keySecret?: string,
+): boolean {
   return Boolean(keyId?.trim() && keySecret?.trim());
 }
 
@@ -19,7 +29,8 @@ export function formatRazorpayError(err: unknown): string {
     };
     const fromApi = payload.error?.description ?? payload.error?.reason;
     if (fromApi) return fromApi;
-    if (typeof payload.message === "string" && payload.message) return payload.message;
+    if (typeof payload.message === "string" && payload.message)
+      return payload.message;
   }
   if (err instanceof Error && err.message) return err.message;
   return "Razorpay request failed";
@@ -45,7 +56,10 @@ export function verifyRazorpayPaymentSignature(input: {
   keySecret: string;
 }): boolean {
   const body = `${input.orderId}|${input.paymentId}`;
-  const expected = crypto.createHmac("sha256", input.keySecret).update(body).digest("hex");
+  const expected = crypto
+    .createHmac("sha256", input.keySecret)
+    .update(body)
+    .digest("hex");
   return safeCompare(expected, input.signature);
 }
 
@@ -57,7 +71,10 @@ export function verifyRazorpaySubscriptionPaymentSignature(input: {
   keySecret: string;
 }): boolean {
   const body = `${input.paymentId}|${input.subscriptionId}`;
-  const expected = crypto.createHmac("sha256", input.keySecret).update(body).digest("hex");
+  const expected = crypto
+    .createHmac("sha256", input.keySecret)
+    .update(body)
+    .digest("hex");
   return safeCompare(expected, input.signature);
 }
 
@@ -75,7 +92,10 @@ export function verifyRazorpayWebhookSignature(input: {
 
 function safeCompare(expected: string, actual: string): boolean {
   try {
-    return crypto.timingSafeEqual(Buffer.from(expected, "utf8"), Buffer.from(actual, "utf8"));
+    return crypto.timingSafeEqual(
+      Buffer.from(expected, "utf8"),
+      Buffer.from(actual, "utf8"),
+    );
   } catch {
     return false;
   }
@@ -91,12 +111,16 @@ export type RazorpaySubscriptionStatus =
   | "completed"
   | "expired";
 
-export function mapRazorpaySubscriptionToOrgStatus(
-  rzStatus: string
-): { razorpayStatus: RazorpaySubscriptionStatus; subscriptionStatus?: "trialing" | "active" | "past_due" | "canceled" } {
+export function mapRazorpaySubscriptionToOrgStatus(rzStatus: string): {
+  razorpayStatus: RazorpaySubscriptionStatus;
+  subscriptionStatus?: "trialing" | "active" | "past_due" | "canceled";
+} {
   switch (rzStatus) {
     case "authenticated":
-      return { razorpayStatus: "authenticated", subscriptionStatus: "trialing" };
+      return {
+        razorpayStatus: "authenticated",
+        subscriptionStatus: "trialing",
+      };
     case "active":
       return { razorpayStatus: "active", subscriptionStatus: "active" };
     case "pending":
@@ -106,10 +130,66 @@ export function mapRazorpaySubscriptionToOrgStatus(
     case "cancelled":
     case "completed":
     case "expired":
-      return { razorpayStatus: rzStatus as RazorpaySubscriptionStatus, subscriptionStatus: "canceled" };
+      return {
+        razorpayStatus: rzStatus as RazorpaySubscriptionStatus,
+        subscriptionStatus: "canceled",
+      };
     default:
       return { razorpayStatus: "created" };
   }
+}
+
+type RazorpayCustomerRecord = { id: string; email?: string | null };
+
+/**
+ * Create a Razorpay customer, or reuse one that already exists for this merchant.
+ * Local and production share one merchant account, so an email created on localhost
+ * is already on Razorpay when production tries to create it.
+ *
+ * The Customers API only honors `fail_existing` as the string `"0"`. Numeric `0` is
+ * treated as omitted (default is fail), which returns "Customer already exists".
+ */
+export async function ensureRazorpayCustomer(
+  client: Razorpay,
+  input: { name: string; email: string; notes?: Record<string, string> },
+): Promise<string> {
+  try {
+    const customer = (await client.customers.create({
+      name: input.name,
+      email: input.email,
+      notes: input.notes,
+      fail_existing: "0" as unknown as 0,
+    })) as { id: string };
+    if (!customer.id) {
+      throw new Error("Razorpay did not return a customer id");
+    }
+    return customer.id;
+  } catch (err) {
+    if (!/already exists/i.test(formatRazorpayError(err))) throw err;
+    const existingId = await findRazorpayCustomerIdByEmail(client, input.email);
+    if (!existingId) throw err;
+    return existingId;
+  }
+}
+
+async function findRazorpayCustomerIdByEmail(
+  client: Razorpay,
+  email: string,
+): Promise<string | null> {
+  const target = email.trim().toLowerCase();
+  const pageSize = 100;
+  for (let skip = 0; skip < 1000; skip += pageSize) {
+    const page = (await client.customers.all({ count: pageSize, skip })) as {
+      items?: RazorpayCustomerRecord[];
+    };
+    const items = page.items ?? [];
+    const match = items.find(
+      (item) => (item.email ?? "").trim().toLowerCase() === target,
+    );
+    if (match?.id) return match.id;
+    if (items.length < pageSize) break;
+  }
+  return null;
 }
 
 /** Resolve plan id — auto-create in dev if missing (dev convenience). */
@@ -117,16 +197,17 @@ export async function resolveRazorpayPlanId(
   client: Razorpay,
   plan: OrganizationPlan,
   configuredPlanId?: string,
-  allowAutoCreate = false
+  allowAutoCreate = false,
 ): Promise<string> {
   const trimmed = configuredPlanId?.trim();
   if (trimmed) return trimmed;
 
   if (!allowAutoCreate) {
-    const envKey = plan === "pro" ? "RAZORPAY_PRO_PLAN_ID" : "RAZORPAY_STARTER_PLAN_ID";
+    const envKey =
+      plan === "pro" ? "RAZORPAY_PRO_PLAN_ID" : "RAZORPAY_STARTER_PLAN_ID";
     const amount = plan === "pro" ? PRO_PRICE_INR : STARTER_PRICE_INR;
     throw new Error(
-      `${envKey} is not set. Create a ₹${amount}/month plan in Razorpay Dashboard → Subscriptions → Plans.`
+      `${envKey} is not set. Create a ₹${amount}/month plan in Razorpay Dashboard → Subscriptions → Plans.`,
     );
   }
 

@@ -112,11 +112,12 @@ export function createAuthService(db: Database, env: Env) {
       const passwordHash = await hashPassword(input.password);
 
       try {
+        const signupPlan = input.plan === "pro" ? "pro" : "starter";
         const [org] = await db
           .insert(organizations)
           .values({
             name: input.organizationName,
-            plan: "starter",
+            plan: signupPlan,
             subscriptionStatus: "trialing",
             trialEndsAt: trialEndsAtFromNow(),
           })

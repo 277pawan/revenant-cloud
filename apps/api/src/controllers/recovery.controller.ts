@@ -1,4 +1,5 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
+import { evaluateRecoveryGate } from "@revenant/shared";
 import { databaseIdParamSchema } from "../validations/databases.schema.js";
 import { jobIdParamSchema } from "../validations/jobs.schema.js";
 import { upsertRecoveryContractSchema } from "../validations/recovery-contract.schema.js";
@@ -86,6 +87,34 @@ export function createRecoveryHandlers(deps: {
         return { readiness };
       } catch (err) {
         return sendHandlerError(err, request, reply, "Failed to get recovery readiness");
+      }
+    },
+
+    getRecoveryGate: async (request: FastifyRequest, reply: FastifyReply) => {
+      const params = databaseIdParamSchema.safeParse(request.params);
+      if (!params.success) {
+        return reply.status(400).send({ error: "Invalid database id", code: "VALIDATION_ERROR" });
+      }
+      const minScoreRaw = (request.query as { minScore?: string }).minScore;
+      const minScore = minScoreRaw ? Number(minScoreRaw) : undefined;
+      if (minScoreRaw != null && (!Number.isFinite(minScore) || minScore! < 0 || minScore! > 100)) {
+        return reply.status(400).send({
+          error: "minScore must be between 0 and 100",
+          code: "VALIDATION_ERROR",
+        });
+      }
+      try {
+        const resource = await deps.readinessService.getForDatabase(
+          request.user.organizationId,
+          params.data.id
+        );
+        const gate = evaluateRecoveryGate(resource.readiness, { minScore });
+        if (!gate.allowed) {
+          return reply.status(412).send({ gate, readiness: resource.readiness });
+        }
+        return { gate, readiness: resource.readiness };
+      } catch (err) {
+        return sendHandlerError(err, request, reply, "Failed to evaluate recovery gate");
       }
     },
 

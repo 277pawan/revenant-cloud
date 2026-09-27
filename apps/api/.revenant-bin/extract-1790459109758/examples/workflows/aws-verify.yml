@@ -1,0 +1,57 @@
+# Example: AWS RDS snapshot restore + verify (any app repo)
+#
+# Copy to: .github/workflows/revenant-aws.yml
+# Secrets: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, SANDBOX_USER, SANDBOX_PASSWORD
+# Config: revenant-aws.yaml in repo root (see revenant-aws-freetier.yaml in CLI repo)
+
+name: Revenant AWS Restore Verify
+
+on:
+  schedule:
+    - cron: '0 2 * * 0' # weekly Sunday 2am UTC
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: 277pawan/revenant-action@v1.0.3
+        with:
+          version: v0.1.1
+          config: revenant-aws.yaml
+          command: verify
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: us-east-1
+          SANDBOX_USER: ${{ secrets.SANDBOX_USER }}
+          SANDBOX_PASSWORD: ${{ secrets.SANDBOX_PASSWORD }}
+          SANDBOX_DBNAME: postgres
+
+      - uses: 277pawan/revenant-action@v1.0.3
+        if: always()
+        with:
+          version: v0.1.1
+          command: reap
+          args: --max-age 4h --region us-east-1
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: us-east-1
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: revenant-aws-report
+          path: |
+            report.json
+            report.md
+          if-no-files-found: ignore
+
+      - name: Failure summary
+        if: failure()
+        run: |
+          echo "## AWS restore validation failed" >> "$GITHUB_STEP_SUMMARY"
+          echo "Download the **revenant-aws-report** artifact." >> "$GITHUB_STEP_SUMMARY"

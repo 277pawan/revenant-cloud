@@ -1,0 +1,36 @@
+# Example: local Postgres verify (any app repo — Node, Python, Go, etc.)
+#
+# Copy to: .github/workflows/revenant-local.yml
+# Add secret: DATABASE_URL (or point at a CI service container)
+#
+# This workflow does NOT need Go or Node. It uses the revenant-action
+# which downloads a pre-built binary from GitHub Releases.
+
+name: Revenant Local Verify
+
+on:
+  schedule:
+    - cron: '0 4 * * 1' # weekly Monday 4am UTC
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: 277pawan/revenant-action@v1.0.3
+        with:
+          version: v0.1.1
+          config: revenant.yaml
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: revenant-report
+          path: |
+            report.json
+            report.md
+          if-no-files-found: ignore

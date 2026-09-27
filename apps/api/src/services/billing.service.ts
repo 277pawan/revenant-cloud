@@ -21,6 +21,7 @@ import {
 } from "../lib/plan-limits.js";
 import {
   createRazorpayClient,
+  ensureRazorpayCustomer,
   formatRazorpayError,
   isRazorpayConfigured,
   mapRazorpaySubscriptionToOrgStatus,
@@ -135,21 +136,75 @@ export function createBillingService(db: Database, env: Env) {
     billingPlan: OrganizationPlan,
     planDef: ReturnType<typeof getPlanDefinition>,
     monthlyInr: number,
-    trialEndsAt: Date
+    trialEndsAt: Date,
+    purpose: BillingCreateOrderResponse["purpose"] = "autopay_setup"
   ): BillingCreateOrderResponse {
+    const description =
+      purpose === "pro_upgrade"
+        ? `Pro upgrade — ₹1 today to confirm in Razorpay. ₹${monthlyInr}/month starts after your free trial.`
+        : `${planDef.name} autopay — ₹1 today to verify your card. ₹${monthlyInr}/month starts after your free trial.`;
+
     return {
       checkoutMode: "subscription",
       subscriptionId,
       amount: STARTER_AUTOPAY_SETUP_PAISE,
       currency: "INR",
       keyId: env.RAZORPAY_KEY_ID!,
-      description:
-        `${planDef.name} autopay — ₹1 today to verify your card. ₹${monthlyInr}/month starts after your free trial.`,
+      description,
       plan: billingPlan,
-      purpose: "autopay_setup",
+      purpose,
       trialEndsAt: trialEndsAt.toISOString(),
       recurringAmountInr: monthlyInr,
     };
+  }
+
+  async function resolveOrganizationCustomerId(
+    client: ReturnType<typeof createRazorpayClient>,
+    organizationId: string,
+    org: {
+      name: string;
+      razorpayCustomerId: string | null;
+      razorpaySubscriptionId: string | null;
+    },
+    adminEmail: string
+  ): Promise<string> {
+    if (org.razorpayCustomerId) {
+      return org.razorpayCustomerId;
+    }
+
+    if (org.razorpaySubscriptionId) {
+      try {
+        const subscription = (await client.subscriptions.fetch(
+          org.razorpaySubscriptionId
+        )) as RazorpaySubscriptionEntity;
+        if (subscription.customer_id) {
+          await db
+            .update(organizations)
+            .set({
+              razorpayCustomerId: subscription.customer_id,
+              updatedAt: new Date(),
+            })
+            .where(eq(organizations.id, organizationId));
+          return subscription.customer_id;
+        }
+      } catch (err) {
+        console.warn(
+          "[billing] Could not load customer from existing subscription:",
+          formatRazorpayError(err)
+        );
+      }
+    }
+
+    const customerId = await ensureRazorpayCustomer(client, {
+      name: org.name,
+      email: adminEmail,
+      notes: { organizationId },
+    });
+    await db
+      .update(organizations)
+      .set({ razorpayCustomerId: customerId, updatedAt: new Date() })
+      .where(eq(organizations.id, organizationId));
+    return customerId;
   }
 
   async function clearStaleSubscription(organizationId: string): Promise<void> {
@@ -213,6 +268,126 @@ export function createBillingService(db: Database, env: Env) {
         status === 401 ? "RAZORPAY_AUTH_FAILED" : "RAZORPAY_SUBSCRIPTION_FAILED"
       );
     }
+  }
+
+  function proUpgradeOrderCheckoutResponse(
+    orderId: string,
+    amount: number,
+    currency: string,
+    trialEndsAt: Date
+  ): BillingCreateOrderResponse {
+    const monthlyInr = PRO_PRICE_INR;
+    return {
+      checkoutMode: "order",
+      orderId,
+      amount,
+      currency,
+      keyId: env.RAZORPAY_KEY_ID!,
+      description: `Pro upgrade — ₹1 today to confirm. ₹${monthlyInr}/month after your free trial.`,
+      plan: "pro",
+      purpose: "pro_upgrade",
+      trialEndsAt: trialEndsAt.toISOString(),
+      recurringAmountInr: monthlyInr,
+    };
+  }
+
+  async function activateProPlanAfterUpgradePayment(
+    organizationId: string,
+    userId: string
+  ): Promise<void> {
+    const client = await assertRazorpayReady();
+
+    const [org] = await db
+      .select({
+        id: organizations.id,
+        name: organizations.name,
+        plan: organizations.plan,
+        trialEndsAt: organizations.trialEndsAt,
+        razorpayCustomerId: organizations.razorpayCustomerId,
+        razorpaySubscriptionId: organizations.razorpaySubscriptionId,
+      })
+      .from(organizations)
+      .where(eq(organizations.id, organizationId))
+      .limit(1);
+
+    if (!org) {
+      throw createAppError(404, "Organization not found", "NOT_FOUND");
+    }
+
+    const [adminUser] = await db
+      .select({ email: users.email })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+
+    if (!adminUser?.email) {
+      throw createAppError(400, "User email required for billing", "VALIDATION_ERROR");
+    }
+
+    const customerId = await resolveOrganizationCustomerId(
+      client,
+      organizationId,
+      org,
+      adminUser.email
+    );
+
+    const oldSubscriptionId = org.razorpaySubscriptionId;
+    if (oldSubscriptionId) {
+      try {
+        await (
+          client.subscriptions.cancel as (
+            id: string,
+            cancelAtCycleEnd?: boolean | number
+          ) => Promise<unknown>
+        )(oldSubscriptionId, false);
+      } catch (err) {
+        console.warn(
+          "[billing] Could not cancel previous Starter subscription after Pro upgrade:",
+          formatRazorpayError(err)
+        );
+      }
+    }
+
+    const trialEndsAt = org.trialEndsAt ?? new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+    const startAtSec = Math.max(
+      Math.floor(trialEndsAt.getTime() / 1000),
+      Math.floor(Date.now() / 1000) + 600
+    );
+
+    const proPlanId = await resolveRazorpayPlanId(
+      client,
+      "pro",
+      env.RAZORPAY_PRO_PLAN_ID,
+      env.RAZORPAY_AUTO_CREATE_PLAN || env.NODE_ENV !== "production"
+    );
+
+    const subscriptionBody = {
+      plan_id: proPlanId,
+      customer_id: customerId,
+      total_count: 120,
+      customer_notify: 1,
+      start_at: startAtSec,
+      notes: {
+        organizationId,
+        plan: "pro",
+        purpose: "autopay_setup",
+      },
+    };
+
+    const subscription = (await (
+      client.subscriptions.create as (body: typeof subscriptionBody) => Promise<RazorpaySubscriptionEntity>
+    )(subscriptionBody)) as RazorpaySubscriptionEntity;
+
+    await db
+      .update(organizations)
+      .set({
+        plan: "pro",
+        razorpaySubscriptionId: subscription.id,
+        updatedAt: new Date(),
+      })
+      .where(eq(organizations.id, organizationId));
+
+    await syncOrgSubscription(organizationId, subscription);
   }
 
   async function createLegacyOrderCheckout(
@@ -321,6 +496,150 @@ export function createBillingService(db: Database, env: Env) {
       };
     },
 
+    /** Pick Starter or Pro before the first ₹1 autopay checkout (no active subscription yet). */
+    async selectBillingPlan(
+      organizationId: string,
+      plan: OrganizationPlan
+    ): Promise<{ plan: OrganizationPlan }> {
+      if (plan !== "starter" && plan !== "pro") {
+        throw createAppError(400, "Only Starter or Pro can be selected here", "VALIDATION_ERROR");
+      }
+
+      if (await hasAutopaySetup(db, organizationId)) {
+        throw createAppError(
+          409,
+          "Billing plan cannot be changed here after autopay is active. Use upgrade instead.",
+          "AUTOPAY_ALREADY_ACTIVE"
+        );
+      }
+
+      await db
+        .update(organizations)
+        .set({ plan, updatedAt: new Date() })
+        .where(eq(organizations.id, organizationId));
+
+      return { plan };
+    },
+
+    /**
+     * Starter → Pro: open Razorpay checkout. Plan changes only after verify-payment succeeds.
+     */
+    async createProUpgradeCheckout(
+      organizationId: string,
+      userId: string
+    ): Promise<BillingCreateOrderResponse> {
+      const client = await assertRazorpayReady();
+
+      const [org] = await db
+        .select({
+          id: organizations.id,
+          name: organizations.name,
+          plan: organizations.plan,
+          trialEndsAt: organizations.trialEndsAt,
+          razorpayCustomerId: organizations.razorpayCustomerId,
+          razorpaySubscriptionId: organizations.razorpaySubscriptionId,
+        })
+        .from(organizations)
+        .where(eq(organizations.id, organizationId))
+        .limit(1);
+
+      if (!org) {
+        throw createAppError(404, "Organization not found", "NOT_FOUND");
+      }
+
+      const currentPlan = parseOrganizationPlan(org.plan);
+      if (currentPlan === "pro") {
+        throw createAppError(409, "Organization is already on Pro", "ALREADY_ON_PRO");
+      }
+      if (currentPlan !== "starter") {
+        throw createAppError(
+          400,
+          "Enterprise billing is handled manually — contact sales",
+          "VALIDATION_ERROR"
+        );
+      }
+
+      if (!(await hasAutopaySetup(db, organizationId))) {
+        throw createAppError(
+          400,
+          "Complete Starter autopay before upgrading to Pro",
+          "AUTOPAY_REQUIRED"
+        );
+      }
+
+      const [pendingUpgrade] = await db
+        .select()
+        .from(billingOrders)
+        .where(
+          and(
+            eq(billingOrders.organizationId, organizationId),
+            eq(billingOrders.purpose, "pro_upgrade"),
+            eq(billingOrders.status, "created")
+          )
+        )
+        .limit(1);
+
+      const trialEndsAt = org.trialEndsAt ?? new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+      const amount = STARTER_AUTOPAY_SETUP_PAISE;
+
+      if (pendingUpgrade?.razorpayOrderId) {
+        try {
+          const existingOrder = await client.orders.fetch(pendingUpgrade.razorpayOrderId);
+          if (existingOrder.status === "created") {
+            return proUpgradeOrderCheckoutResponse(
+              existingOrder.id,
+              Number(existingOrder.amount),
+              existingOrder.currency ?? "INR",
+              trialEndsAt
+            );
+          }
+        } catch {
+          // fall through and create a fresh checkout
+        }
+      }
+
+      const receipt = `pro_upgrade_${organizationId.slice(0, 8)}_${Date.now()}`;
+      let razorpayOrder: { id: string; amount: number | string; currency?: string };
+      try {
+        razorpayOrder = await client.orders.create({
+          amount,
+          currency: "INR",
+          receipt,
+          notes: {
+            organizationId,
+            plan: "pro",
+            purpose: "pro_upgrade",
+            replacesSubscriptionId: org.razorpaySubscriptionId ?? "",
+          },
+        });
+      } catch (err) {
+        const message = formatRazorpayError(err);
+        throw createAppError(
+          razorpayHttpStatus(err),
+          message,
+          razorpayHttpStatus(err) === 401 ? "RAZORPAY_AUTH_FAILED" : "RAZORPAY_ORDER_FAILED"
+        );
+      }
+
+      await db.insert(billingOrders).values({
+        organizationId,
+        razorpayOrderId: razorpayOrder.id,
+        amountPaise: amount,
+        currency: razorpayOrder.currency ?? "INR",
+        plan: "pro",
+        purpose: "pro_upgrade",
+        status: "created",
+        createdByUserId: userId,
+      });
+
+      return proUpgradeOrderCheckoutResponse(
+        razorpayOrder.id,
+        Number(razorpayOrder.amount),
+        razorpayOrder.currency ?? "INR",
+        trialEndsAt
+      );
+    },
+
     /** Subscription checkout: ₹1 addon today + monthly charge after trial (`start_at`). */
     async createStarterAutopayOrder(
       organizationId: string,
@@ -412,24 +731,17 @@ export function createBillingService(db: Database, env: Env) {
         );
       }
 
-      let customerId = org.razorpayCustomerId;
-      if (!customerId) {
-        try {
-          const customer = (await client.customers.create({
-            name: org.name,
-            email: adminUser.email,
-            fail_existing: 0,
-            notes: { organizationId },
-          })) as { id: string };
-          customerId = customer.id;
-          await db
-            .update(organizations)
-            .set({ razorpayCustomerId: customerId, updatedAt: new Date() })
-            .where(eq(organizations.id, organizationId));
-        } catch (err) {
-          const message = formatRazorpayError(err);
-          throw createAppError(razorpayHttpStatus(err), message, "RAZORPAY_CUSTOMER_FAILED");
-        }
+      let customerId: string;
+      try {
+        customerId = await resolveOrganizationCustomerId(
+          client,
+          organizationId,
+          org,
+          adminUser.email
+        );
+      } catch (err) {
+        const message = formatRazorpayError(err);
+        throw createAppError(razorpayHttpStatus(err), message, "RAZORPAY_CUSTOMER_FAILED");
       }
 
       let subscription: RazorpaySubscriptionEntity;
@@ -570,8 +882,11 @@ export function createBillingService(db: Database, env: Env) {
           throw createAppError(404, "Subscription checkout not found", "ORDER_NOT_FOUND");
         }
 
+        const checkoutPurpose =
+          orderRow.purpose === "pro_upgrade" ? "pro_upgrade" : "autopay_setup";
+
         if (orderRow.status === "paid") {
-          return { ok: true, autopaySetup: true };
+          return { ok: true, autopaySetup: true, checkoutPurpose };
         }
 
         const client = createRazorpayClient(env.RAZORPAY_KEY_ID!, env.RAZORPAY_KEY_SECRET);
@@ -589,11 +904,46 @@ export function createBillingService(db: Database, env: Env) {
           })
           .where(eq(billingOrders.id, orderRow.id));
 
-        await syncOrgSubscription(organizationId, subscription);
-        await alignTrialAfterAutopaySetup(organizationId, razorpay_subscription_id);
+        if (orderRow.purpose === "pro_upgrade") {
+          const replacesSubscriptionId =
+            subscription.notes?.replacesSubscriptionId?.trim() || null;
+
+          if (
+            replacesSubscriptionId &&
+            replacesSubscriptionId !== razorpay_subscription_id
+          ) {
+            try {
+              await (
+                client.subscriptions.cancel as (
+                  id: string,
+                  cancelAtCycleEnd?: boolean | number
+                ) => Promise<unknown>
+              )(replacesSubscriptionId, false);
+            } catch (err) {
+              console.warn(
+                "[billing] Could not cancel previous Starter subscription after Pro upgrade:",
+                formatRazorpayError(err)
+              );
+            }
+          }
+
+          await db
+            .update(organizations)
+            .set({
+              plan: "pro",
+              razorpaySubscriptionId: razorpay_subscription_id,
+              updatedAt: now,
+            })
+            .where(eq(organizations.id, organizationId));
+
+          await syncOrgSubscription(organizationId, subscription);
+        } else {
+          await syncOrgSubscription(organizationId, subscription);
+          await alignTrialAfterAutopaySetup(organizationId, razorpay_subscription_id);
+        }
 
         void userId;
-        return { ok: true, autopaySetup: true };
+        return { ok: true, autopaySetup: true, checkoutPurpose };
       }
 
       if (!razorpay_order_id) {
@@ -630,8 +980,11 @@ export function createBillingService(db: Database, env: Env) {
         throw createAppError(404, "Order not found for this organization", "ORDER_NOT_FOUND");
       }
 
+      const checkoutPurpose =
+        orderRow.purpose === "pro_upgrade" ? "pro_upgrade" : "autopay_setup";
+
       if (orderRow.status === "paid") {
-        return { ok: true, autopaySetup: true };
+        return { ok: true, autopaySetup: true, checkoutPurpose };
       }
 
       const now = new Date();
@@ -644,10 +997,14 @@ export function createBillingService(db: Database, env: Env) {
         })
         .where(eq(billingOrders.id, orderRow.id));
 
-      await alignTrialAfterAutopaySetup(organizationId, null);
+      if (orderRow.purpose === "pro_upgrade") {
+        await activateProPlanAfterUpgradePayment(organizationId, userId);
+      } else {
+        await alignTrialAfterAutopaySetup(organizationId, null);
+      }
 
       void userId;
-      return { ok: true, autopaySetup: true };
+      return { ok: true, autopaySetup: true, checkoutPurpose };
     },
 
     async handleRazorpayWebhook(rawBody: Buffer, signatureHeader: string | undefined) {

@@ -69,8 +69,8 @@ export function messageParallelDrillLimit(planId: OrganizationPlan, limit: numbe
   const plan = getPlanDefinition(planId);
   if (limit === 1) {
     return (
-      `${plan.name} runs one restore drill at a time. ` +
-      `Wait for the current drill to finish, then try again.`
+      `${plan.name} runs one restore drill at a time (queued or running). ` +
+      `Failed drills do not block new runs — only a drill still in the queue counts.`
     );
   }
   return (

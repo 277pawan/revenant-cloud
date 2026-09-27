@@ -16,6 +16,7 @@ import type { FundingHandlers } from "../../controllers/funding.controller.js";
 import type { EngagementHandlers } from "../../controllers/engagement.controller.js";
 import type { BillingHandlers } from "../../controllers/billing.controller.js";
 import type { RecoveryHandlers } from "../../controllers/recovery.controller.js";
+import type { RecoveryPointsHandlers } from "../../controllers/recovery-points.controller.js";
 import type { SettingsHandlers } from "../../controllers/settings.controller.js";
 import type { Env } from "../../config/env.js";
 import type { Database } from "../../db/index.js";
@@ -58,6 +59,7 @@ export async function registerV1Routes(
     engagementHandlers: EngagementHandlers;
     billingHandlers: BillingHandlers;
     recoveryHandlers: RecoveryHandlers;
+    recoveryPointsHandlers: RecoveryPointsHandlers;
     settingsHandlers: SettingsHandlers;
     env: Env;
     db: Database;
@@ -76,7 +78,7 @@ export async function registerV1Routes(
       );
       await authRoutes(api, deps.authHandlers);
       await databasesRoutes(api, deps.databasesHandlers);
-      await recoveryRoutes(api, deps.recoveryHandlers);
+      await recoveryRoutes(api, deps.recoveryHandlers, deps.recoveryPointsHandlers);
       await plansRoutes(api, deps.plansHandlers);
       await teamRoutes(api, deps.teamHandlers);
       await jobsRoutes(

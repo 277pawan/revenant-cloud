@@ -19,7 +19,7 @@ try {
     const cli = await resolveRevenantCli();
     console.log(
       `[embedded-runner] enabled — jobs will be claimed automatically` +
-        (cli ? ` (CLI: ${cli})` : " (CLI not found → metadata fallback; set REVENANT_CLI_PATH)")
+        (cli ? ` (CLI: ${cli})` : " (CLI not found → metadata fallback; GitHub release fetch failed)")
     );
     startRunnerPoll({
       apiBase,

@@ -22,6 +22,21 @@ export function createAuditHandlers(auditService: AuditService) {
         return sendHandlerError(err, request, reply, "Failed to list audit events");
       }
     },
+
+    exportCsv: async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const csv = await auditService.exportCsv(request.user.organizationId);
+        return reply
+          .header("Content-Type", "text/csv; charset=utf-8")
+          .header(
+            "Content-Disposition",
+            `attachment; filename="revenant-audit-log-${new Date().toISOString().slice(0, 10)}.csv"`
+          )
+          .send(csv);
+      } catch (err) {
+        return sendHandlerError(err, request, reply, "Failed to export audit log");
+      }
+    },
   };
 }
 

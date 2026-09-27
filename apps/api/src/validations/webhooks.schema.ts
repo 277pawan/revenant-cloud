@@ -1,6 +1,12 @@
 import { z } from "zod";
 
-const webhookEventSchema = z.enum(["job.pass", "job.fail", "job.error"]);
+const webhookEventSchema = z.enum([
+  "job.pass",
+  "job.fail",
+  "job.error",
+  "contract.breach",
+  "contract.regression",
+]);
 
 const slackConfigSchema = z.object({
   webhookUrl: z

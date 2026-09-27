@@ -11,4 +11,10 @@ export async function auditRoutes(
     { preHandler: requirePermission("audit:read") },
     handlers.list
   );
+
+  app.get(
+    "/audit/export",
+    { preHandler: requirePermission("audit:read") },
+    handlers.exportCsv
+  );
 }

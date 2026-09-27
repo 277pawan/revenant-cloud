@@ -51,6 +51,32 @@ checks:
 `,
   },
   {
+    id: "db-plus-api",
+    name: "Database + API health",
+    description:
+      "Postgres checks plus HTTP health on your application — proves DB and API after restore.",
+    tags: ["postgres", "http", "pro"],
+    yamlText: `plan: db-and-api-validation
+
+database:
+  engine: postgres
+  connection: \${DATABASE_URL}
+
+checks:
+  - type: connect
+  - type: schema
+    expect_tables:
+      - customers
+  - type: row_count
+    table: customers
+    min: 1
+  - type: http_health
+    url: https://api.example.com/health
+    name: application_health
+    expect_status: 200
+`,
+  },
+  {
     id: "cloud-postgres",
     name: "Cloud Postgres (direct)",
     description: "Connect to a live Postgres URL — connect, schema, and row-count smoke checks.",

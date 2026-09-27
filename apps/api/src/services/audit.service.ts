@@ -80,6 +80,32 @@ export function createAuditService(db: Database) {
         pagination: paginationMeta(total, page, pageSize),
       };
     },
+
+    async exportCsv(organizationId: string, limit = 5000): Promise<string> {
+      const rows = await db
+        .select()
+        .from(auditEvents)
+        .where(eq(auditEvents.organizationId, organizationId))
+        .orderBy(desc(auditEvents.createdAt))
+        .limit(limit);
+
+      const header = "id,created_at,actor_user_id,action,resource_type,resource_id,metadata";
+      const lines = rows.map((row) => {
+        const metadata = row.metadata ? JSON.stringify(JSON.parse(row.metadata)) : "";
+        const cells = [
+          row.id,
+          row.createdAt.toISOString(),
+          row.actorUserId ?? "",
+          row.action,
+          row.resourceType,
+          row.resourceId,
+          metadata,
+        ].map((cell) => `"${String(cell).replace(/"/g, '""')}"`);
+        return cells.join(",");
+      });
+
+      return [header, ...lines].join("\n");
+    },
   };
 }
 

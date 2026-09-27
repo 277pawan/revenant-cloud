@@ -108,6 +108,7 @@ export * from "./auth.js";
 export * from "./public.js";
 export * from "./recovery-contract.js";
 export * from "./recovery-readiness.js";
+export * from "./recovery-points.js";
 export * from "./billing.js";
 
 /** Fleet health for dashboard — why someone opens the app on Tuesday */
@@ -138,6 +139,8 @@ export interface DashboardOnboardingStep {
   label: string;
   done: boolean;
   href: string;
+  /** Optional hosted docs link shown beside the step */
+  docsHref?: string | null;
 }
 
 export interface DashboardRtoTrendPoint {
@@ -262,6 +265,7 @@ export interface AwsRecoveryConfig {
 export interface RunnerAwsCredentials {
   accessKeyId: string;
   secretAccessKey: string;
+  sessionToken?: string;
 }
 
 /** Public database shape — never includes password or AWS keys */
@@ -305,6 +309,7 @@ export interface CreateDatabaseRequest {
   recoverySandboxInstanceClass?: string;
   awsAccessKeyId?: string;
   awsSecretAccessKey?: string;
+  awsSessionToken?: string;
   description?: string;
 }
 
@@ -324,6 +329,7 @@ export interface UpdateDatabaseRequest {
   recoverySandboxInstanceClass?: string | null;
   awsAccessKeyId?: string;
   awsSecretAccessKey?: string;
+  awsSessionToken?: string;
   description?: string | null;
 }
 
@@ -619,6 +625,8 @@ export interface RecoveryReadinessResource {
   databaseName: string;
   contractVersion: number;
   readiness: import("./recovery-readiness.js").RecoveryReadinessResult;
+  /** Last drill with full readiness — recover from this snapshot/point. */
+  lastVerifiedRecoveryPoint: import("./recovery-readiness.js").RecoveryVerifiedPoint | null;
   providers: import("./recovery-contract.js").RecoveryProviderDefinition[];
 }
 

@@ -507,6 +507,94 @@ export const recoveryChallenges = pgTable("recovery_challenges", {
 });
 
 /** Phase 8 — readiness score history per verified drill. */
+/** Customer AWS snapshot metadata — Revenant does not store backup data. */
+export const recoveryPoints = pgTable(
+  "recovery_points",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    databaseId: uuid("database_id")
+      .notNull()
+      .references(() => databases.id, { onDelete: "cascade" }),
+    provider: varchar("provider", { length: 50 }).notNull().default("aws-rds"),
+    region: varchar("region", { length: 50 }),
+    sourceDbIdentifier: varchar("source_db_identifier", { length: 255 }),
+    snapshotIdentifier: varchar("snapshot_identifier", { length: 255 }).notNull(),
+    snapshotArn: varchar("snapshot_arn", { length: 512 }),
+    engine: varchar("engine", { length: 50 }),
+    engineVersion: varchar("engine_version", { length: 50 }),
+    snapshotCreatedAt: timestamp("snapshot_created_at", { withTimezone: true }),
+    snapshotOrigin: varchar("snapshot_origin", { length: 50 }).notNull().default("unknown"),
+    status: varchar("status", { length: 50 }).notNull().default("active"),
+    lastVerifiedAt: timestamp("last_verified_at", { withTimezone: true }),
+    lastVerificationStatus: varchar("last_verification_status", { length: 50 })
+      .notNull()
+      .default("never"),
+    lastVerificationJobId: uuid("last_verification_job_id").references(() => jobs.id, {
+      onDelete: "set null",
+    }),
+    lastRtoSeconds: integer("last_rto_seconds"),
+    lastRpoObservedSeconds: integer("last_rpo_observed_seconds"),
+    validationPlanVersion: integer("validation_plan_version"),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("recovery_points_org_snapshot_uidx").on(
+      table.organizationId,
+      table.databaseId,
+      table.snapshotIdentifier
+    ),
+  ]
+);
+
+export const recoveryRuns = pgTable("recovery_runs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  organizationId: uuid("organization_id")
+    .notNull()
+    .references(() => organizations.id, { onDelete: "cascade" }),
+  recoveryPointId: uuid("recovery_point_id")
+    .notNull()
+    .references(() => recoveryPoints.id, { onDelete: "cascade" }),
+  jobId: uuid("job_id").references(() => jobs.id, { onDelete: "set null" }),
+  runType: varchar("run_type", { length: 50 }).notNull(),
+  status: varchar("status", { length: 50 }).notNull(),
+  cleanupStatus: varchar("cleanup_status", { length: 50 }),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  restoreStartedAt: timestamp("restore_started_at", { withTimezone: true }),
+  restoreCompletedAt: timestamp("restore_completed_at", { withTimezone: true }),
+  rtoSeconds: integer("rto_seconds"),
+  errorMessage: text("error_message"),
+  metadataJson: jsonb("metadata_json"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const recoveryInstances = pgTable("recovery_instances", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  organizationId: uuid("organization_id")
+    .notNull()
+    .references(() => organizations.id, { onDelete: "cascade" }),
+  recoveryRunId: uuid("recovery_run_id")
+    .notNull()
+    .references(() => recoveryRuns.id, { onDelete: "cascade" }),
+  awsDbInstanceIdentifier: varchar("aws_db_instance_identifier", { length: 255 }).notNull(),
+  endpoint: varchar("endpoint", { length: 512 }),
+  port: integer("port"),
+  region: varchar("region", { length: 50 }),
+  instanceClass: varchar("instance_class", { length: 50 }),
+  temporary: varchar("temporary", { length: 10 }).notNull().default("true"),
+  status: varchar("status", { length: 50 }).notNull().default("creating"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  deletedAt: timestamp("deleted_at", { withTimezone: true }),
+});
+
 export const readinessSnapshots = pgTable("readiness_snapshots", {
   id: uuid("id").primaryKey().defaultRandom(),
   organizationId: uuid("organization_id")
@@ -619,5 +707,8 @@ export type RecoveryFingerprint = typeof recoveryFingerprints.$inferSelect;
 export type RecoveryDriftEvent = typeof recoveryDriftEvents.$inferSelect;
 export type RecoveryChallenge = typeof recoveryChallenges.$inferSelect;
 export type ReadinessSnapshot = typeof readinessSnapshots.$inferSelect;
+export type RecoveryPoint = typeof recoveryPoints.$inferSelect;
+export type RecoveryRun = typeof recoveryRuns.$inferSelect;
+export type RecoveryInstance = typeof recoveryInstances.$inferSelect;
 export type BillingOrder = typeof billingOrders.$inferSelect;
 export type FundingPayment = typeof fundingPayments.$inferSelect;

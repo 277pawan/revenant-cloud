@@ -85,6 +85,42 @@ export function createJobsHandlers(
       }
     },
 
+    listActive: async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const jobs = await jobsService.listActive(request.user.organizationId);
+        return { jobs };
+      } catch (err) {
+        return sendHandlerError(err, request, reply, "Failed to list active drills");
+      }
+    },
+
+    cancel: async (request: FastifyRequest, reply: FastifyReply) => {
+      const params = jobIdParamSchema.safeParse(request.params);
+      if (!params.success) {
+        return reply
+          .status(400)
+          .send({ error: "Invalid job id", code: "VALIDATION_ERROR" });
+      }
+
+      try {
+        const job = await jobsService.cancel(
+          request.user.organizationId,
+          params.data.id
+        );
+        await auditService.log({
+          organizationId: request.user.organizationId,
+          actorUserId: request.user.id,
+          action: "job.cancel",
+          resourceType: "job",
+          resourceId: job.id,
+          metadata: { databaseId: job.databaseId },
+        });
+        return { job };
+      } catch (err) {
+        return sendHandlerError(err, request, reply, "Failed to cancel drill");
+      }
+    },
+
     create: async (request: FastifyRequest, reply: FastifyReply) => {
       const body = createJobSchema.safeParse(request.body);
       if (!body.success) {
@@ -170,6 +206,8 @@ export function createJobsHandlers(
         await evidenceService.archiveFromJob(orgId, detail);
         await recoveryPostProcessService.onJobCompleted(orgId, detail);
         await webhooksService.dispatchForJob(orgId, detail);
+        await webhooksService.dispatchContractBreachIfNeeded(orgId, detail);
+        await webhooksService.dispatchContractRegressionIfNeeded(orgId, detail);
 
         return { job };
       } catch (err) {

@@ -1,8 +1,17 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  access,
+  constants,
+  copyFile,
+  mkdtemp,
+  mkdir,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { access, constants } from "node:fs/promises";
 import type { AwsRecoveryConfig, RecoveryMode, RunnerAwsCredentials } from "@revenant/shared";
 import {
   collectHttpHealthSpecs,
@@ -13,6 +22,7 @@ import {
 export type ClaimedPayload = {
   job: { id: string; databaseName: string };
   database: {
+    id: string;
     host: string | null;
     port: number | null;
     databaseName: string | null;
@@ -24,8 +34,16 @@ export type ClaimedPayload = {
   recovery: AwsRecoveryConfig | null;
   awsCredentials: RunnerAwsCredentials | null;
   planYaml: string | null;
-  /** Injected from recovery contract when required.healthcheck is true */
-  contractHealthcheck?: { url: string } | null;
+  /** Recovery contract application checks (healthcheck URL + optional endpoints) */
+  contractApplication?: {
+    healthcheck?: string;
+    endpoints?: Array<{
+      name: string;
+      method: string;
+      path: string;
+      expect_status?: number;
+    }>;
+  } | null;
   fullDrill?: boolean;
 };
 
@@ -49,7 +67,36 @@ export type ExecutionOutcome = {
 type CliReport = {
   status?: string;
   checks?: Array<{ name?: string; status?: string; message?: string }>;
+  recovery?: {
+    snapshot_identifier?: string;
+    snapshot_arn?: string;
+    temporary_instance_identifier?: string;
+    cleanup_status?: string;
+    cleanup_error?: string;
+  };
 };
+
+export function mapCliCleanupResult(
+  cleanup: NonNullable<CliReport["recovery"]>
+): CheckResult {
+  const cleanupStatus = cleanup.cleanup_status ?? "not_created";
+  const status = cleanupStatus === "deleted"
+    ? "pass"
+    : cleanupStatus === "failed"
+      ? "fail"
+      : "skip";
+  const instance = cleanup.temporary_instance_identifier
+    ? ` ${cleanup.temporary_instance_identifier}`
+    : "";
+  const detail = cleanup.cleanup_error ? `: ${cleanup.cleanup_error}` : "";
+  return {
+    checkName: "temp_instance_cleanup",
+    checkType: "cleanup",
+    status,
+    message: `Temporary RDS${instance} cleanup ${cleanupStatus}${detail}`.slice(0, 500),
+    durationMs: 0,
+  };
+}
 
 const AWS_VERIFY_TIMEOUT_MS = Number(
   process.env.REVENANT_AWS_VERIFY_TIMEOUT_MS ?? 2_100_000
@@ -67,43 +114,166 @@ async function fileExists(path: string): Promise<boolean> {
   }
 }
 
-/** Resolve revenant binary: env → PATH → sibling repo binary */
+export function isLocalCliOverrideAllowed(): boolean {
+  const value = (process.env.REVENANT_ALLOW_LOCAL_FALLBACK ?? "").trim().toLowerCase();
+  return value === "true" || value === "1" || value === "yes";
+}
+
+export function buildReleaseAssetName(version: string): string | null {
+  const normalizedVersion = version.replace(/^v/, "");
+  const platform = process.platform;
+  const arch = process.arch;
+
+  const osName =
+    platform === "linux"
+      ? "linux"
+      : platform === "darwin"
+        ? "darwin"
+        : platform === "win32"
+          ? "windows"
+          : null;
+
+  if (!osName) return null;
+
+  const archName =
+    arch === "x64"
+      ? "amd64"
+      : arch === "arm64"
+        ? "arm64"
+        : arch === "arm"
+          ? "arm64"
+          : null;
+
+  if (!archName) return null;
+
+  const suffix = osName === "windows" ? "zip" : "tar.gz";
+  return `revenant_${normalizedVersion}_${osName}_${archName}.${suffix}`;
+}
+
+async function installLatestRevenantCli(): Promise<string | null> {
+  const repo = process.env.REVENANT_CLI_REPO ?? "277pawan/revenant-cli";
+  const targetDir = process.env.REVENANT_CLI_DIR ?? resolve(process.cwd(), ".revenant-bin");
+  const releaseVersion = process.env.REVENANT_CLI_VERSION ?? "latest";
+  const version = releaseVersion === "latest"
+    ? await fetch(`https://api.github.com/repos/${repo}/releases/latest`)
+        .then(async (res) => {
+          if (!res.ok) throw new Error(`github release lookup failed: ${res.status}`);
+          const json = (await res.json()) as { tag_name?: string };
+          if (!json.tag_name) throw new Error("latest release tag missing");
+          return json.tag_name;
+        })
+        .catch(() => null)
+    : releaseVersion;
+
+  if (!version) return null;
+
+  const assetName = buildReleaseAssetName(version);
+  if (!assetName) return null;
+
+  await mkdir(targetDir, { recursive: true });
+  const installDir = targetDir;
+  const archivePath = join(installDir, assetName);
+  const archiveUrl = `https://github.com/${repo}/releases/download/${version}/${assetName}`;
+  const archiveResponse = await fetch(archiveUrl);
+  if (!archiveResponse.ok) {
+    return null;
+  }
+
+  const archiveBuffer = Buffer.from(await archiveResponse.arrayBuffer());
+  await writeFile(archivePath, archiveBuffer);
+
+  const unpackDir = join(targetDir, `extract-${Date.now()}`);
+  await mkdir(unpackDir, { recursive: true });
+
+  const command = process.platform === "win32" ? "powershell" : "tar";
+  const args = process.platform === "win32"
+    ? [
+        "-NoLogo",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        `Expand-Archive -LiteralPath '${archivePath}' -DestinationPath '${unpackDir}' -Force`,
+      ]
+    : ["-xzf", archivePath, "-C", unpackDir];
+
+  await new Promise<void>((resolvePromise, reject) => {
+    const child = spawn(command, args, { stdio: "inherit" });
+    child.on("error", reject);
+    child.on("close", (code) => (code === 0 ? resolvePromise() : reject(new Error(`extract failed with code ${code}`))));
+  });
+
+  const candidates: string[] = [
+    join(unpackDir, "revenant"),
+    join(targetDir, "revenant"),
+  ];
+
+  const found = await (async () => {
+    for (const candidate of candidates) {
+      if (await fileExists(candidate)) return candidate;
+    }
+
+    try {
+      const entries = await readdir(unpackDir, { recursive: true });
+      const nested = entries.filter((entry) => typeof entry === "string" && entry.endsWith("/revenant"));
+      for (const entry of nested) {
+        const full = join(unpackDir, entry);
+        if (await fileExists(full)) return full;
+      }
+    } catch {
+      // Ignore unmatched extraction layout
+    }
+
+    return null;
+  })();
+
+  if (!found) {
+    await rm(unpackDir, { recursive: true, force: true }).catch(() => undefined);
+    return null;
+  }
+
+  const finalBin = join(targetDir, "revenant");
+  await copyFile(found, finalBin);
+  await new Promise<void>((resolvePromise, reject) => {
+    const child = spawn("chmod", ["+x", finalBin], { stdio: "inherit" });
+    child.on("error", reject);
+    child.on("close", (code) => (code === 0 ? resolvePromise() : reject(new Error(`chmod failed with code ${code}`))));
+  });
+
+  process.env.REVENANT_CLI_PATH = finalBin;
+  await rm(unpackDir, { recursive: true, force: true }).catch(() => undefined);
+  return finalBin;
+}
+
+/** Resolve revenant binary: latest GitHub release by default, with explicit local opt-in only. */
 export async function resolveRevenantCli(): Promise<string | null> {
+  const localFallbackAllowed = isLocalCliOverrideAllowed();
   const fromEnv = process.env.REVENANT_CLI_PATH?.trim();
-  if (fromEnv && (await fileExists(fromEnv))) {
+
+  if (!localFallbackAllowed && fromEnv) {
+    delete process.env.REVENANT_CLI_PATH;
+    console.warn(
+      "[revenant-resolver] ignoring REVENANT_CLI_PATH because local fallback is disabled; using latest GitHub release only"
+    );
+  }
+
+  if (fromEnv && localFallbackAllowed && (await fileExists(fromEnv))) {
+    console.log(`[revenant-resolver] using REVENANT_CLI_PATH=${fromEnv}`);
     return fromEnv;
   }
 
-  const sibling = resolve(
-    process.cwd(),
-    "..",
-    "..",
-    "..",
-    "revenant-cli",
-    "revenant"
-  );
-  const candidates = [
-    fromEnv,
-    sibling,
-    resolve(process.cwd(), "../revenant-cli/revenant"),
-    resolve(process.cwd(), "../../revenant-cli/revenant"),
-    resolve(process.cwd(), "revenant"),
-  ].filter(Boolean) as string[];
-
-  for (const c of candidates) {
-    if (await fileExists(c)) return c;
-  }
-
   try {
-    await new Promise<void>((ok, err) => {
-      const child = spawn("revenant", ["--help"], { stdio: "ignore" });
-      child.on("error", err);
-      child.on("exit", (code) => (code === 0 ? ok() : err(new Error("no"))));
-    });
-    return "revenant";
-  } catch {
-    return null;
+    const installed = await installLatestRevenantCli();
+    if (installed) {
+      console.log(`[revenant-resolver] using GitHub release binary=${installed}`);
+      return installed;
+    }
+  } catch (error) {
+    console.warn("[revenant-resolver] GitHub release lookup failed:", error);
   }
+
+  console.warn("[revenant-resolver] no release binary found; refusing local repo and PATH fallback");
+  return null;
 }
 
 export function isAwsRecoveryMode(claimed: ClaimedPayload): boolean {
@@ -169,7 +339,9 @@ export function buildDirectCliConfigYaml(
 export function buildAwsCliConfigYaml(
   planYaml: string | null,
   planName: string,
-  recovery: AwsRecoveryConfig
+  recovery: AwsRecoveryConfig,
+  databaseId: string,
+  jobId: string
 ): string {
   const lines = [
     `plan: ${JSON.stringify(planName)}`,
@@ -181,6 +353,8 @@ export function buildAwsCliConfigYaml(
     "  engine: aws-rds",
     `  source_identifier: ${JSON.stringify(recovery.sourceIdentifier)}`,
     `  region: ${JSON.stringify(recovery.region)}`,
+    `  database_id: ${JSON.stringify(databaseId)}`,
+    `  job_id: ${JSON.stringify(jobId)}`,
   ];
 
   if (recovery.useFreetier) {
@@ -285,6 +459,7 @@ function buildCliEnv(
         ...process.env,
         AWS_ACCESS_KEY_ID: aws.accessKeyId,
         AWS_SECRET_ACCESS_KEY: aws.secretAccessKey,
+        ...(aws.sessionToken ? { AWS_SESSION_TOKEN: aws.sessionToken } : {}),
         AWS_REGION: recovery.region,
         SANDBOX_USER: username,
         SANDBOX_PASSWORD: claimed.password,
@@ -341,12 +516,15 @@ async function runWithCli(
   }
 
   const planName = claimed.job.databaseName || "cloud-job";
-  const httpSpecs = collectHttpHealthSpecs(
-    claimed.planYaml,
-    claimed.contractHealthcheck
-  );
+  const httpSpecs = collectHttpHealthSpecs(claimed.planYaml, claimed.contractApplication);
   const yaml = awsMode && claimed.recovery
-    ? buildAwsCliConfigYaml(claimed.planYaml, planName, claimed.recovery)
+    ? buildAwsCliConfigYaml(
+        claimed.planYaml,
+        planName,
+        claimed.recovery,
+        claimed.database.id,
+        claimed.job.id
+      )
     : buildDirectCliConfigYaml(claimed.planYaml, planName);
 
   const dir = await mkdtemp(join(tmpdir(), "revenant-job-"));
@@ -416,6 +594,18 @@ async function runWithCli(
       });
     }
     results.push(...verifyResults);
+    if (report.recovery?.snapshot_identifier) {
+      const snapshotArn = report.recovery.snapshot_arn
+        ? `;snapshot_arn=${report.recovery.snapshot_arn}`
+        : "";
+      results.push({
+        checkName: "recovery_snapshot",
+        checkType: "recovery_snapshot",
+        status: "pass",
+        message: `snapshot_identifier=${report.recovery.snapshot_identifier}${snapshotArn}`,
+        durationMs: 0,
+      });
+    }
 
     if (httpSpecs.length > 0) {
       results.push(...(await runHttpHealthChecks(httpSpecs)));
@@ -447,6 +637,10 @@ async function runWithCli(
     }
 
     const failed = verifyFailed || results.some((r) => r.status === "fail");
+    const cleanup = report.recovery;
+    if (cleanup) {
+      results.push(mapCliCleanupResult(cleanup));
+    }
 
     return {
       status: failed ? "fail" : "pass",
@@ -463,11 +657,11 @@ async function runWithCli(
   }
 }
 
-function runMetadataFallback(
+async function runMetadataFallback(
   claimed: ClaimedPayload,
   executionMode: "stub" | "agent" | "ci",
   reason: string
-): ExecutionOutcome {
+): Promise<ExecutionOutcome> {
   const started = Date.now();
   const awsMode = isAwsRecoveryMode(claimed);
   const hasTarget = awsMode
@@ -508,6 +702,11 @@ function runMetadataFallback(
     },
   ];
 
+  const httpSpecs = collectHttpHealthSpecs(claimed.planYaml, claimed.contractApplication);
+  if (httpSpecs.length > 0) {
+    results.push(...(await runHttpHealthChecks(httpSpecs)));
+  }
+
   const failed = results.some((r) => r.status === "fail");
   return {
     status: failed ? "fail" : "pass",
@@ -536,15 +735,15 @@ export async function executeClaimedJob(
     (executionMode === "stub" && process.env.REVENANT_STUB_SIMULATE === "true");
 
   if (forceSim) {
-    return runMetadataFallback(claimed, executionMode, "forced simulation");
+    return await runMetadataFallback(claimed, executionMode, "forced simulation");
   }
 
   const cli = await resolveRevenantCli();
   if (!cli) {
-    return runMetadataFallback(
+    return await runMetadataFallback(
       claimed,
       executionMode,
-      "revenant CLI not found — set REVENANT_CLI_PATH"
+      "revenant CLI not found — latest GitHub release could not be fetched, or local fallback is disabled"
     );
   }
 

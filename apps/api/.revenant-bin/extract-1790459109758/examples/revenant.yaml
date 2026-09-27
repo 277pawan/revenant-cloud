@@ -1,0 +1,26 @@
+# Same as the root revenant.yaml — kept here as a copy-paste example
+# for people who are not using this repo as their app repo.
+
+plan: local-demo
+
+database:
+  engine: postgres
+  connection: ${DATABASE_URL}
+
+checks:
+  - type: schema
+    expect_tables:
+      - customers
+      - orders
+
+  - type: row_count
+    table: orders
+    min: 1
+
+  - type: foreign_key
+    table: orders
+    references: customers
+
+  - type: golden_query
+    query: "SELECT count(*) FROM orders"
+    expect_min: 1

@@ -15,6 +15,18 @@ export async function billingRoutes(
   );
 
   app.post(
+    "/billing/select-plan",
+    { preHandler: [requireAuth, requireRoles("admin")] },
+    handlers.selectPlan
+  );
+
+  app.post(
+    "/billing/upgrade-pro",
+    { preHandler: [requireAuth, requireRoles("admin")] },
+    handlers.upgradePro
+  );
+
+  app.post(
     "/billing/create-order",
     { preHandler: [requireAuth, requireRoles("admin")] },
     handlers.createOrder

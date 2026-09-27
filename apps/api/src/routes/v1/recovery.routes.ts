@@ -1,8 +1,13 @@
 import type { FastifyInstance } from "fastify";
 import type { RecoveryHandlers } from "../../controllers/recovery.controller.js";
+import type { RecoveryPointsHandlers } from "../../controllers/recovery-points.controller.js";
 import { requirePermission } from "../../middleware/auth.js";
 
-export async function recoveryRoutes(app: FastifyInstance, handlers: RecoveryHandlers) {
+export async function recoveryRoutes(
+  app: FastifyInstance,
+  handlers: RecoveryHandlers,
+  recoveryPointsHandlers: RecoveryPointsHandlers
+) {
   app.get(
     "/databases/:id/recovery-contract",
     { preHandler: requirePermission("databases:read") },
@@ -19,6 +24,12 @@ export async function recoveryRoutes(app: FastifyInstance, handlers: RecoveryHan
     "/databases/:id/readiness",
     { preHandler: requirePermission("databases:read") },
     handlers.getReadiness
+  );
+
+  app.get(
+    "/databases/:id/recovery-gate",
+    { preHandler: requirePermission("databases:read") },
+    handlers.getRecoveryGate
   );
 
   app.get(
@@ -73,5 +84,41 @@ export async function recoveryRoutes(app: FastifyInstance, handlers: RecoveryHan
     "/challenges/:challengeId/run",
     { preHandler: requirePermission("jobs:run") },
     handlers.runChallenge
+  );
+
+  app.get(
+    "/databases/:id/recovery-points",
+    { preHandler: requirePermission("databases:read") },
+    recoveryPointsHandlers.listForDatabase
+  );
+
+  app.get(
+    "/recovery-points/:id",
+    { preHandler: requirePermission("databases:read") },
+    recoveryPointsHandlers.get
+  );
+
+  app.post(
+    "/recovery-points/:id/verify",
+    { preHandler: requirePermission("jobs:run") },
+    recoveryPointsHandlers.verifyAgain
+  );
+
+  app.delete(
+    "/recovery-points/:id",
+    { preHandler: requirePermission("jobs:run") },
+    recoveryPointsHandlers.deleteSnapshot
+  );
+
+  app.post(
+    "/recovery-points/:id/recover",
+    { preHandler: requirePermission("jobs:run") },
+    recoveryPointsHandlers.recover
+  );
+
+  app.get(
+    "/recovery-points/:id/instances",
+    { preHandler: requirePermission("databases:read") },
+    recoveryPointsHandlers.listRecoveryInstances
   );
 }

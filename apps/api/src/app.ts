@@ -29,6 +29,8 @@ import { createRecoveryChallengesService } from "./services/recovery-challenges.
 import { createReadinessSnapshotService } from "./services/readiness-snapshot.service.js";
 import { createRecoveryPostProcessService } from "./services/recovery-post-process.service.js";
 import { createRecoveryHandlers } from "./controllers/recovery.controller.js";
+import { createRecoveryPointsHandlers } from "./controllers/recovery-points.controller.js";
+import { createRecoveryPointsService } from "./services/recovery-points.service.js";
 import { generateCorrelationId, recordRequest } from "./lib/observability.js";
 import { createPlansHandlers } from "./controllers/plans.controller.js";
 import { createTeamHandlers } from "./controllers/team.controller.js";
@@ -116,12 +118,14 @@ export async function buildApp(env: Env) {
     recoveryReadinessService
   );
   const recoveryChallengesService = createRecoveryChallengesService(db);
+  const recoveryPointsService = createRecoveryPointsService(db, jobsService, env.MASTER_KEY);
   const settingsService = createSettingsService(db);
   const recoveryPostProcessService = createRecoveryPostProcessService(db, {
     fingerprintService: recoveryFingerprintService,
     driftService: recoveryDriftService,
     passportService: recoveryPassportService,
     snapshotService: readinessSnapshotService,
+    recoveryPointsService,
   });
 
   app.addHook("onRequest", async (request) => {
@@ -149,6 +153,7 @@ export async function buildApp(env: Env) {
       createDatabasesService(db, env.MASTER_KEY),
       recoveryContractService
     ),
+    recoveryPointsHandlers: createRecoveryPointsHandlers(recoveryPointsService),
     recoveryHandlers: createRecoveryHandlers({
       contractService: recoveryContractService,
       readinessService: recoveryReadinessService,

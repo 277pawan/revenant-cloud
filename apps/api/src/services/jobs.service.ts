@@ -304,8 +304,11 @@ export function createJobsService(db: Database, masterKey: string) {
       );
     }
 
-    let awsCredentials: { accessKeyId: string; secretAccessKey: string } | null =
-      null;
+    let awsCredentials: {
+      accessKeyId: string;
+      secretAccessKey: string;
+      sessionToken?: string;
+    } | null = null;
     if (database.recoveryMode === "aws-rds") {
       const awsCred = await db
         .select()
@@ -325,11 +328,13 @@ export function createJobsService(db: Database, masterKey: string) {
         const parsed = JSON.parse(json) as {
           accessKeyId?: string;
           secretAccessKey?: string;
+          sessionToken?: string;
         };
         if (parsed.accessKeyId && parsed.secretAccessKey) {
           awsCredentials = {
             accessKeyId: parsed.accessKeyId,
             secretAccessKey: parsed.secretAccessKey,
+            ...(parsed.sessionToken ? { sessionToken: parsed.sessionToken } : {}),
           };
         }
       }
@@ -348,10 +353,16 @@ export function createJobsService(db: Database, masterKey: string) {
       .limit(1);
 
     const contractDef = (contractRow?.definitionJson ?? {}) as RecoveryContractDefinition;
-    const healthcheckUrl = contractDef.recovery?.application?.healthcheck?.trim();
     const healthcheckRequired =
       contractDef.recovery?.required?.healthcheck === true ||
       contractDef.recovery?.required?.api === true;
+    const contractApplication =
+      healthcheckRequired && contractDef.recovery?.application
+        ? {
+            healthcheck: contractDef.recovery.application.healthcheck,
+            endpoints: contractDef.recovery.application.endpoints,
+          }
+        : null;
 
     const recoveryMode = database.recoveryMode === "aws-rds" ? "aws-rds" : "direct";
     const recovery =
@@ -383,10 +394,7 @@ export function createJobsService(db: Database, masterKey: string) {
       awsCredentials,
       planYaml: plan[0]?.yamlText ?? null,
       planVersion: plan[0]?.version ?? null,
-      contractHealthcheck:
-        healthcheckRequired && healthcheckUrl
-          ? { url: healthcheckUrl }
-          : null,
+      contractApplication,
       executionMode,
       fullDrill:
         updated.trigger === "full-drill" ||
@@ -455,6 +463,62 @@ export function createJobsService(db: Database, masterKey: string) {
     }
 
     return toJob(updated, rows[0].databaseName);
+  },
+
+  async cancel(organizationId: string, jobId: string): Promise<JobResource> {
+    const rows = await db
+      .select({
+        job: jobs,
+        databaseName: databases.name,
+      })
+      .from(jobs)
+      .innerJoin(databases, eq(databases.id, jobs.databaseId))
+      .where(and(eq(jobs.id, jobId), eq(jobs.organizationId, organizationId)))
+      .limit(1);
+
+    if (!rows[0]) {
+      throw createAppError(404, "Job not found", "NOT_FOUND");
+    }
+
+    if (!["pending", "running"].includes(rows[0].job.status)) {
+      throw createAppError(
+        409,
+        "Only queued or running drills can be cancelled",
+        "JOB_ALREADY_FINISHED"
+      );
+    }
+
+    const [updated] = await db
+      .update(jobs)
+      .set({
+        status: "cancelled",
+        errorMessage: "Cancelled from the dashboard",
+        finishedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(jobs.id, jobId))
+      .returning();
+
+    return toJob(updated, rows[0].databaseName);
+  },
+
+  async listActive(organizationId: string): Promise<JobResource[]> {
+    const rows = await db
+      .select({
+        job: jobs,
+        databaseName: databases.name,
+      })
+      .from(jobs)
+      .innerJoin(databases, eq(databases.id, jobs.databaseId))
+      .where(
+        and(
+          eq(jobs.organizationId, organizationId),
+          or(eq(jobs.status, "pending"), eq(jobs.status, "running"))
+        )
+      )
+      .orderBy(desc(jobs.createdAt));
+
+    return rows.map((r) => toJob(r.job, r.databaseName));
   },
 
   async getOrganizationId(jobId: string): Promise<string> {

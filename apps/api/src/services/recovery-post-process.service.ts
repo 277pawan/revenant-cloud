@@ -3,6 +3,7 @@ import type { RecoveryDriftService } from "./recovery-drift.service.js";
 import type { RecoveryFingerprintService } from "./recovery-fingerprint.service.js";
 import type { RecoveryPassportService } from "./recovery-passport.service.js";
 import type { createReadinessSnapshotService } from "./readiness-snapshot.service.js";
+import type { RecoveryPointsService } from "./recovery-points.service.js";
 import { jobs, recoveryChallenges } from "../db/schema.js";
 import { eq } from "drizzle-orm";
 import type { Database } from "../db/index.js";
@@ -17,10 +18,16 @@ export function createRecoveryPostProcessService(
     driftService: RecoveryDriftService;
     passportService: RecoveryPassportService;
     snapshotService: ReturnType<typeof createReadinessSnapshotService>;
+    recoveryPointsService: RecoveryPointsService;
   }
 ) {
   return {
     async onJobCompleted(organizationId: string, job: JobDetailResource): Promise<void> {
+      try {
+        await deps.recoveryPointsService.syncFromJob(organizationId, job);
+      } catch (err) {
+        console.error("[recovery] recovery point sync failed:", err);
+      }
       if (job.status === "pass") {
         try {
           await deps.snapshotService.recordFromJob(organizationId, job);
