@@ -32,6 +32,16 @@ npm install && npm start
 
 See [RUNNERS.md](./RUNNERS.md).
 
+## Recovery points and restores
+
+For AWS RDS workflows, the Recovery points view discovers available manual and automated snapshots for the configured source instance and lists them newest-first. A user can choose a recovery point to restore into a new RDS instance; Revenant reads the source instance's subnet group and VPC security groups from AWS and reuses them for the restore. The configured recovery instance class is preferred, falling back to the source instance class.
+
+Restore attempts are recorded separately from snapshots. The new RDS instance is retained in the customer's AWS account, and its status/history is available under **Recovered instances**. It is not automatically reaped because it may contain data the user wants to inspect; it continues to incur AWS charges until the customer deletes it.
+
+Manual snapshots can be deleted from AWS through the recovery-point action. AWS does not allow individual deletion of automated snapshots, so Revenant can only hide those from the active recovery-point list; AWS retains them according to its backup retention policy. Existing verification and restore history is kept in Revenant.
+
+Legacy verification records without an AWS snapshot ID are matched against snapshots that existed by the verification time. The resolved ID is saved and shown for review before a restore is started; if Revenant cannot make a safe match, it does not guess a snapshot.
+
 ## Database commands (from repo root)
 
 | Command | What it does |
