@@ -381,6 +381,7 @@ export function createJobsService(db: Database, masterKey: string) {
       database: {
         id: database.id,
         name: database.name,
+        engine: database.engine === "mysql" ? "mysql" : "postgres",
         host: database.host,
         port: database.port,
         databaseName: database.databaseName,

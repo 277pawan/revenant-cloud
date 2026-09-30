@@ -247,7 +247,7 @@ export interface HealthResponse {
   environment?: string;
 }
 
-export type DatabaseEngine = "postgres";
+export type DatabaseEngine = "postgres" | "mysql";
 export type SslMode = "require" | "prefer" | "disable";
 /** direct = live Postgres; aws-rds = snapshot restore drill via CLI */
 export type RecoveryMode = "direct" | "aws-rds";

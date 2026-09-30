@@ -83,7 +83,7 @@ const awsRecoveryRefine = (
 export const createDatabaseSchema = z
   .object({
     name: z.string().min(1).max(255),
-    engine: z.enum(["postgres"]).default("postgres"),
+    engine: z.enum(["postgres", "mysql"]).default("postgres"),
     host: z.string().max(255).optional(),
     port: z.number().int().min(1).max(65535).optional(),
     databaseName: z.string().max(255).optional(),
@@ -114,7 +114,7 @@ export const createDatabaseSchema = z
 export const updateDatabaseSchema = z
   .object({
     name: z.string().min(1).max(255).optional(),
-    engine: z.enum(["postgres"]).optional(),
+    engine: z.enum(["postgres", "mysql"]).optional(),
     host: z.string().max(255).nullable().optional(),
     port: z.number().int().min(1).max(65535).nullable().optional(),
     databaseName: z.string().max(255).nullable().optional(),

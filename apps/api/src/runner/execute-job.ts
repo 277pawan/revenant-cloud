@@ -23,6 +23,7 @@ export type ClaimedPayload = {
   job: { id: string; databaseName: string };
   database: {
     id: string;
+    engine: "postgres" | "mysql";
     host: string | null;
     port: number | null;
     databaseName: string | null;
@@ -284,14 +285,18 @@ export function isAwsRecoveryMode(claimed: ClaimedPayload): boolean {
 }
 
 export function buildDatabaseUrl(claimed: ClaimedPayload): string | null {
-  const { host, port, databaseName, username, sslMode } = claimed.database;
+  const { engine, host, port, databaseName, username, sslMode } = claimed.database;
   if (!host || !databaseName || !username || !claimed.password) {
     return null;
   }
   const user = encodeURIComponent(username);
   const pass = encodeURIComponent(claimed.password);
   const dbName = encodeURIComponent(databaseName);
-  const p = port ?? 5432;
+  const p = port ?? (engine === "mysql" ? 3306 : 5432);
+  if (engine === "mysql") {
+    const tls = sslMode === "disable" ? "" : "?tls=true";
+    return `mysql://${user}:${pass}@${host}:${p}/${dbName}${tls}`;
+  }
   const mode =
     !sslMode || sslMode === ""
       ? host === "localhost" || host === "127.0.0.1"
@@ -319,15 +324,16 @@ function extractChecksBlock(planYaml: string | null): string {
   return stripHttpHealthFromChecksBlock(checksBlock);
 }
 
-/** Build CLI config for direct Postgres connection. */
+/** Build CLI config for a direct SQL connection. */
 export function buildDirectCliConfigYaml(
   planYaml: string | null,
-  planName: string
+  planName: string,
+  engine: "postgres" | "mysql"
 ): string {
   return [
     `plan: ${JSON.stringify(planName)}`,
     "database:",
-    "  engine: postgres",
+    `  engine: ${engine}`,
     "  connection: ${DATABASE_URL}",
     "",
     extractChecksBlock(planYaml),
@@ -341,13 +347,18 @@ export function buildAwsCliConfigYaml(
   planName: string,
   recovery: AwsRecoveryConfig,
   databaseId: string,
-  jobId: string
+  jobId: string,
+  engine: "postgres" | "mysql" = "postgres"
 ): string {
+  const sandboxPort = engine === "mysql" ? 3306 : 5432;
+  const sandboxConnection = engine === "mysql"
+    ? `mysql://\${SANDBOX_USER}:\${SANDBOX_PASSWORD}@\${SANDBOX_ENDPOINT}:${sandboxPort}/\${SANDBOX_DBNAME}?tls=true`
+    : `postgres://\${SANDBOX_USER}:\${SANDBOX_PASSWORD}@\${SANDBOX_ENDPOINT}:${sandboxPort}/\${SANDBOX_DBNAME}?sslmode=require`;
   const lines = [
     `plan: ${JSON.stringify(planName)}`,
     "database:",
-    "  engine: postgres",
-    "  connection: postgres://${SANDBOX_USER}:${SANDBOX_PASSWORD}@${SANDBOX_ENDPOINT}:5432/${SANDBOX_DBNAME}?sslmode=require",
+    `  engine: ${engine}`,
+    `  connection: ${sandboxConnection}`,
     "",
     "recovery:",
     "  engine: aws-rds",
@@ -523,9 +534,10 @@ async function runWithCli(
         planName,
         claimed.recovery,
         claimed.database.id,
-        claimed.job.id
+        claimed.job.id,
+        claimed.database.engine
       )
-    : buildDirectCliConfigYaml(claimed.planYaml, planName);
+    : buildDirectCliConfigYaml(claimed.planYaml, planName, claimed.database.engine);
 
   const dir = await mkdtemp(join(tmpdir(), "revenant-job-"));
   try {

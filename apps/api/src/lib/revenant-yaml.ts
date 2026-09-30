@@ -43,8 +43,8 @@ export function validateRevenantYaml(text: string): {
   }
 
   const database = root.database as Record<string, unknown> | undefined;
-  if (!database || database.engine !== "postgres") {
-    throw new Error("database.engine must be postgres");
+  if (!database || !["postgres", "mysql"].includes(String(database.engine))) {
+    throw new Error("database.engine must be postgres or mysql");
   }
   if (typeof database.connection !== "string" || !database.connection.includes("${")) {
     throw new Error("database.connection must use ${DATABASE_URL} or ${SANDBOX_*}");
