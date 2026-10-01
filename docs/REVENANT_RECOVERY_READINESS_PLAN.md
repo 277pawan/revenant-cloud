@@ -1373,9 +1373,9 @@ jobs:
         run: revenant contract validate revenant.yaml
 
       - name: Run recovery checks
-        uses: 277pawan/revenant-action@v1
+        uses: 277pawan/revenant-action@v1.0.4
         with:
-          plan: revenant.yaml
+          config: revenant.yaml
 ```
 
 Later:
