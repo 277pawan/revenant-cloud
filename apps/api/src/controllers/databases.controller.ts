@@ -51,6 +51,32 @@ export function createDatabasesHandlers(
       }
     },
 
+    awsSourceStatus: async (request: FastifyRequest, reply: FastifyReply) => {
+      const params = databaseIdParamSchema.safeParse(request.params);
+      if (!params.success) {
+        return reply
+          .status(400)
+          .send({ error: "Invalid database id", code: "VALIDATION_ERROR" });
+      }
+
+      const startedAt = Date.now();
+      console.log(`[aws-source-check] API request database=${params.data.id}`);
+      try {
+        const status = await databasesService.checkAwsSourceStatus(
+          request.user.organizationId,
+          params.data.id
+        );
+        return { status };
+      } catch (err) {
+        console.error(
+          `[aws-source-check] API request failed database=${params.data.id} ` +
+            `duration=${Date.now() - startedAt}ms:`,
+          err instanceof Error ? err.message : err
+        );
+        return sendHandlerError(err, request, reply, "Failed to check AWS source status");
+      }
+    },
+
     create: async (request: FastifyRequest, reply: FastifyReply) => {
       const parsed = createDatabaseSchema.safeParse(request.body);
       if (!parsed.success) {

@@ -60,6 +60,7 @@ export function createWebhooksHandlers(
             provider: result.endpoint.provider,
           },
         });
+        request.auditEventRecorded = true;
         return reply.status(201).send(result);
       } catch (err) {
         return sendHandlerError(err, request, reply, "Failed to create webhook");
@@ -94,6 +95,7 @@ export function createWebhooksHandlers(
           resourceType: "webhook",
           resourceId: endpoint.id,
         });
+        request.auditEventRecorded = true;
         return { endpoint };
       } catch (err) {
         return sendHandlerError(err, request, reply, "Failed to update webhook");
@@ -120,6 +122,7 @@ export function createWebhooksHandlers(
           resourceType: "webhook",
           resourceId: params.data.id,
         });
+        request.auditEventRecorded = true;
         return result;
       } catch (err) {
         return sendHandlerError(err, request, reply, "Failed to send test alert");
@@ -146,6 +149,7 @@ export function createWebhooksHandlers(
           resourceType: "webhook",
           resourceId: params.data.id,
         });
+        request.auditEventRecorded = true;
         return reply.status(204).send();
       } catch (err) {
         return sendHandlerError(err, request, reply, "Failed to delete webhook");

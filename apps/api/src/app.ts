@@ -63,6 +63,10 @@ declare module "fastify" {
     config: Env;
     db: Database;
   }
+
+  interface FastifyRequest {
+    auditEventRecorded?: boolean;
+  }
 }
 
 declare module "@fastify/jwt" {
@@ -73,9 +77,7 @@ declare module "@fastify/jwt" {
 }
 
 export async function buildApp(env: Env) {
-  const app = Fastify({
-    logger: env.NODE_ENV === "development",
-  });
+  const app = Fastify({});
 
   app.decorate("config", env);
 
@@ -103,7 +105,12 @@ export async function buildApp(env: Env) {
   const jobsService = createJobsService(db, env.MASTER_KEY);
   const auditService = createAuditService(db);
   const evidenceService = createEvidenceService(db, env.EVIDENCE_DIR);
-  const webhooksService = createWebhooksService(db, env.MASTER_KEY, env);
+  const webhooksService = createWebhooksService(
+    db,
+    env.MASTER_KEY,
+    env,
+    auditService,
+  );
   const recoveryContractService = createRecoveryContractService(db);
   const recoveryReadinessService = createRecoveryReadinessService(db);
   const recoveryFingerprintService = createRecoveryFingerprintService(db);
@@ -111,14 +118,18 @@ export async function buildApp(env: Env) {
   const recoveryPassportService = createRecoveryPassportService(
     db,
     env.EVIDENCE_DIR,
-    env.MASTER_KEY
+    env.MASTER_KEY,
   );
   const readinessSnapshotService = createReadinessSnapshotService(
     db,
-    recoveryReadinessService
+    recoveryReadinessService,
   );
   const recoveryChallengesService = createRecoveryChallengesService(db);
-  const recoveryPointsService = createRecoveryPointsService(db, jobsService, env.MASTER_KEY);
+  const recoveryPointsService = createRecoveryPointsService(
+    db,
+    jobsService,
+    env.MASTER_KEY,
+  );
   const settingsService = createSettingsService(db);
   const recoveryPostProcessService = createRecoveryPostProcessService(db, {
     fingerprintService: recoveryFingerprintService,
@@ -137,8 +148,43 @@ export async function buildApp(env: Env) {
     request.headers["x-correlation-id"] = correlationId;
   });
 
-  app.addHook("onResponse", async (_request, reply) => {
+  app.addHook("onResponse", async (request, reply) => {
     recordRequest(reply.statusCode);
+    if (
+      request.auditEventRecorded ||
+      !["POST", "PUT", "PATCH", "DELETE"].includes(request.method) ||
+      !request.user?.organizationId
+    ) {
+      return;
+    }
+
+    const route = request.routeOptions.url ?? request.url.split("?")[0];
+    const segments = route.split("/").filter(Boolean);
+    const versionIndex = segments.indexOf("v1");
+    const resourceType = segments[versionIndex + 1] ?? segments[0] ?? "api";
+    const params = request.params as Record<string, unknown>;
+    const resourceId =
+      Object.values(params).find(
+        (value): value is string => typeof value === "string",
+      ) ?? String(request.headers["x-correlation-id"] ?? request.id);
+
+    try {
+      await auditService.log({
+        organizationId: request.user.organizationId,
+        actorUserId: request.user.id,
+        action: `${resourceType}.${request.method.toLowerCase()}`,
+        resourceType,
+        resourceId,
+        metadata: {
+          method: request.method,
+          route,
+          statusCode: reply.statusCode,
+          correlationId: request.headers["x-correlation-id"],
+        },
+      });
+    } catch (error) {
+      request.log.error({ err: error }, "Failed to record audit event");
+    }
   });
 
   await rootHealthRoutes(app, db);
@@ -147,13 +193,16 @@ export async function buildApp(env: Env) {
     authHandlers: createAuthHandlers(
       createAuthService(db, env),
       authProvidersService,
-      env
+      env,
     ),
     databasesHandlers: createDatabasesHandlers(
       createDatabasesService(db, env.MASTER_KEY),
-      recoveryContractService
+      recoveryContractService,
     ),
-    recoveryPointsHandlers: createRecoveryPointsHandlers(recoveryPointsService),
+    recoveryPointsHandlers: createRecoveryPointsHandlers(
+      recoveryPointsService,
+      auditService,
+    ),
     recoveryHandlers: createRecoveryHandlers({
       contractService: recoveryContractService,
       readinessService: recoveryReadinessService,
@@ -170,7 +219,7 @@ export async function buildApp(env: Env) {
     plansHandlers: createPlansHandlers(
       createPlansService(db),
       createYamlComposerService(env),
-      recoveryDriftService
+      recoveryDriftService,
     ),
     teamHandlers: createTeamHandlers(createTeamService(db, env)),
     jobsHandlers: createJobsHandlers(
@@ -178,19 +227,19 @@ export async function buildApp(env: Env) {
       evidenceService,
       webhooksService,
       auditService,
-      recoveryPostProcessService
+      recoveryPostProcessService,
     ),
     runnersHandlers: createRunnersHandlers(createRunnersService(db)),
     schedulesHandlers: createSchedulesHandlers(
       createSchedulesService(db),
-      auditService
+      auditService,
     ),
     evidenceHandlers: createEvidenceHandlers(evidenceService),
     webhooksHandlers: createWebhooksHandlers(webhooksService, auditService),
     auditHandlers: createAuditHandlers(auditService),
     dashboardHandlers: createDashboardHandlers(
       createDashboardService(db),
-      readinessSnapshotService
+      readinessSnapshotService,
     ),
     publicHandlers: createPublicHandlers(env, authProvidersService),
     contactHandlers: createContactHandlers(createContactService(db, env)),
@@ -198,7 +247,7 @@ export async function buildApp(env: Env) {
     engagementHandlers: createEngagementHandlers(createEngagementService(db)),
     billingHandlers: createBillingHandlers(
       createBillingService(db, env),
-      auditService
+      auditService,
     ),
     settingsHandlers: createSettingsHandlers(settingsService, auditService),
     env,

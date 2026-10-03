@@ -5,6 +5,7 @@ import {
   executeClaimedJob,
   type ClaimedPayload,
   type ExecutionOutcome,
+  type ReportRunnerProgress,
 } from "./execute-job.js";
 import { withRunnerExecutionLock } from "./execution-lock.js";
 
@@ -16,7 +17,13 @@ export type RunnerPollOptions = {
   label?: string;
 };
 
-async function claimAndComplete(opts: RunnerPollOptions): Promise<void> {
+type RunnerPollExecutionOptions = RunnerPollOptions & {
+  hasReportedApiConnection(): boolean;
+  reportApiConnection(): void;
+};
+
+async function claimAndComplete(opts: RunnerPollExecutionOptions): Promise<void> {
+  const label = opts.label ?? opts.executionMode;
   const claimRes = await fetch(`${opts.apiBase}/api/v1/runner/claim`, {
     method: "POST",
     headers: {
@@ -24,9 +31,16 @@ async function claimAndComplete(opts: RunnerPollOptions): Promise<void> {
       "Content-Type": "application/json",
     },
     body: "{}",
+    signal: AbortSignal.timeout(15_000),
   });
 
-  if (claimRes.status === 204) return;
+  if (claimRes.status === 204) {
+    if (!opts.hasReportedApiConnection()) {
+      console.log(`[${label}] API reachable; no queued jobs`);
+      opts.reportApiConnection();
+    }
+    return;
+  }
 
   if (!claimRes.ok) {
     console.error(
@@ -36,18 +50,50 @@ async function claimAndComplete(opts: RunnerPollOptions): Promise<void> {
     );
     return;
   }
+  if (!opts.hasReportedApiConnection()) {
+    console.log(`[${label}] API reachable; runner authenticated`);
+    opts.reportApiConnection();
+  }
 
   const claimed = (await claimRes.json()) as ClaimedPayload & {
     executionMode?: string;
   };
 
   console.log(
-    `[${opts.label ?? opts.executionMode}] claimed ${claimed.job.id} (${claimed.job.databaseName})`
+    `[${label}] claimed job=${claimed.job.id} database=${claimed.job.databaseName} ` +
+      `runnerMode=${opts.executionMode}`
   );
 
+  const reportProgress: ReportRunnerProgress = async (stage, message) => {
+    try {
+      const progressRes = await fetch(
+        `${opts.apiBase}/api/v1/runner/jobs/${claimed.job.id}/progress`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${opts.token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ stage, message }),
+          signal: AbortSignal.timeout(5_000),
+        }
+      );
+      if (progressRes.ok) return;
+      console.error(
+        `[${label}] progress update failed job=${claimed.job.id} stage=${stage}: ` +
+          `${progressRes.status} ${await progressRes.text()}`
+      );
+    } catch (error) {
+      console.error(
+        `[${label}] progress update failed job=${claimed.job.id} stage=${stage}:`,
+        error instanceof Error ? error.message : error
+      );
+    }
+  };
   const outcome: ExecutionOutcome = await executeClaimedJob(
     claimed,
-    opts.executionMode
+    opts.executionMode,
+    reportProgress
   );
 
   const completeRes = await fetch(
@@ -69,6 +115,7 @@ async function claimAndComplete(opts: RunnerPollOptions): Promise<void> {
         errorMessage: outcome.errorMessage,
         results: outcome.results,
       }),
+      signal: AbortSignal.timeout(15_000),
     }
   );
 
@@ -82,24 +129,40 @@ async function claimAndComplete(opts: RunnerPollOptions): Promise<void> {
   }
 
   console.log(
-    `[${opts.label ?? opts.executionMode}] completed ${claimed.job.id} → ${outcome.status}` +
-      (outcome.usedCli ? " (revenant verify)" : " (fallback)")
+    `[${label}] completed job=${claimed.job.id} status=${outcome.status}` +
+      (outcome.usedCli ? " (revenant verify)" : " (CLI unavailable)")
   );
 }
 
 export function startRunnerPoll(opts: RunnerPollOptions): () => void {
   const intervalMs = opts.intervalMs ?? 3000;
   const label = opts.label ?? opts.executionMode;
-  console.log(`[${label}] polling ${opts.apiBase} every ${intervalMs}ms`);
+  let apiConnectionReported = false;
+  const pollOptions = {
+    ...opts,
+    hasReportedApiConnection: () => apiConnectionReported,
+    reportApiConnection: () => {
+      apiConnectionReported = true;
+    },
+  };
+  console.log(
+    `[${label}] runner starting mode=${opts.executionMode}; checking API at ` +
+      `${opts.apiBase}/api/v1/runner/claim every ${intervalMs}ms`
+  );
 
   const tick = () => {
-    void withRunnerExecutionLock(() => claimAndComplete(opts))
+    void withRunnerExecutionLock(() => claimAndComplete(pollOptions))
       .then((ran) => {
         if (ran === null) {
           // Another drill is still running on this API instance — skip this poll tick.
         }
       })
-      .catch((err) => console.error(`[${label}]`, err));
+      .catch((err) => {
+        console.error(
+          `[${label}] API poll or job execution failed:`,
+          err instanceof Error ? err.message : err
+        );
+      });
   };
 
   tick();

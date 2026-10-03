@@ -44,7 +44,7 @@ Requires sibling repo: `../revenant-cli` (CLI is compiled inside the image).
 3. Start API with the **backend `.env`** from Step 3 (Railway, Fly, ECS, VPS + systemd, etc.)
 4. API must be reachable at `https://api.revenant.dev` with HTTPS
 
-**API container must have `revenant` CLI on PATH** (or set `REVENANT_CLI_PATH`) if `EMBEDDED_RUNNER=true` — otherwise managed drills cannot run verify.
+When `EMBEDDED_RUNNER=true`, Cloud Run downloads the private CLI release using `REVENANT_CLI_GITHUB_TOKEN`. This is one service-level distribution credential, not a customer database credential. Drill DB passwords and AWS credentials remain encrypted per database and are injected only into that database's job.
 
 ---
 
@@ -79,9 +79,41 @@ COOKIE_SECURE=true
 # ─── Managed drills (Starter + Pro AWS) ───────────────────
 EMBEDDED_RUNNER=true
 EMBEDDED_SCHEDULER=true
-REVENANT_CLI_PATH=/usr/local/bin/revenant
+AWS_RECOVERY_MAX_LIFETIME_MINUTES=60
+RECOVERY_RECONCILE_TOKEN=STORE_A_RANDOM_SECRET_IN_SECRET_MANAGER
+```
 
-# ─── Auth ─────────────────────────────────────────────────
+Apply migration `0024_recovery_ttl_policy` through the normal database migration step before deploying the API version that uses these columns. It preserves enabled recovery drills for existing AWS databases; newly registered AWS databases start disabled until explicitly enabled in **Recovery operations**.
+
+Revenant-created temporary restore instances and full-drill snapshots are tagged with `ManagedBy=Revenant`, `Purpose=RecoveryValidation`, `DatabaseId`, `RunId`, and (when auto-delete is enabled) `ExpiresAt`. Automatic deletion is **off by default**. Set a per-database retention in **Recovery operations** to expire Revenant-created resources; leave it off to retain them indefinitely. Resources already created with an expiry retain that expiry unless they are reconciled while the database retention setting is disabled. Resources created without an expiry receive one starting from the next reconciliation after auto-delete is enabled. The source database and AWS automated snapshots are never deleted.
+
+An additional, separately confirmed option allows deletion of non-Revenant **manual snapshots for that database's configured source** after the selected retention duration. Existing manual snapshots older than that duration can be deleted at the next reconciliation. Do not enable it unless deleting those customer-created snapshots is intended. It never deletes the source database or AWS automated snapshots.
+
+A process crash or timeout can bypass normal completion reporting, so configure Google Cloud Scheduler (or an equivalent scheduler) to send an authenticated `POST` to:
+
+```text
+https://YOUR_API/api/v1/internal/recovery/reconcile
+Authorization: Bearer <RECOVERY_RECONCILE_TOKEN>
+```
+
+Run it every five minutes and keep the token in Secret Manager. The endpoint scans Revenant-owned resources by exact ownership/purpose/database/run/expiry tags, and scans customer manual snapshots only for databases where the separate opt-in is enabled. It waits for AWS deletion confirmation and returns `207` with per-database errors if any cleanup could not be completed. No scheduler or cloud resource is created by the application migration or deployment.
+
+`AWS_RECOVERY_MAX_LIFETIME_MINUTES` caps any configured retention (default cap 60 minutes; valid range 10–1440); it does not turn automatic deletion on. If a run is still active and sending heartbeats when its expiry passes, reconciliation extends the expiry in ten-minute increments so it does not interrupt a legitimate restore or validation. A finished or stale Revenant-created resource is eligible after its expiry plus the ten-minute grace period.
+
+Create a fine-grained GitHub token restricted to `277pawan/revenant-cli` with **Contents: Read-only** and store it in Google Cloud Secret Manager under `REVENANT_CLI_GITHUB_TOKEN`. Do not put this token in a customer GitHub repository or commit it. Grant Secret Manager Secret Accessor to both the Cloud Run runtime service account and the GitHub deploy identity. The deploy workflow maps the Secret Manager version `latest` to the `REVENANT_CLI_GITHUB_TOKEN` environment variable.
+
+For a manual Cloud Run update, bind the existing secret with:
+
+```bash
+gcloud run services update revenant-api \
+  --region asia-south1 \
+  --update-secrets=REVENANT_CLI_GITHUB_TOKEN=REVENANT_CLI_GITHUB_TOKEN:latest
+```
+
+If the private release cannot be downloaded, production drills fail instead of returning a metadata-only pass.
+
+### Auth
+
 ALLOW_OPEN_REGISTRATION=true
 
 # ─── Google OAuth (backend secrets — NOT in frontend) ─────

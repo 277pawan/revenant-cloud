@@ -38,6 +38,7 @@ import { billingRoutes } from "./billing.routes.js";
 import { engagementRoutes } from "./engagement.routes.js";
 import { recoveryRoutes } from "./recovery.routes.js";
 import { settingsRoutes } from "./settings.routes.js";
+import { recoveryReconcileRoutes } from "./recovery-reconcile.routes.js";
 
 export async function registerV1Routes(
   app: FastifyInstance,
@@ -79,6 +80,7 @@ export async function registerV1Routes(
       await authRoutes(api, deps.authHandlers);
       await databasesRoutes(api, deps.databasesHandlers);
       await recoveryRoutes(api, deps.recoveryHandlers, deps.recoveryPointsHandlers);
+      await recoveryReconcileRoutes(api, deps.db, deps.env.MASTER_KEY);
       await plansRoutes(api, deps.plansHandlers);
       await teamRoutes(api, deps.teamHandlers);
       await jobsRoutes(

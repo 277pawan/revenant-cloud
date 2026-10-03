@@ -13,11 +13,19 @@ import {
   databases,
   jobResults,
   jobs,
+  recoveryPoints,
   recoveryContracts,
   validationPlans,
 } from "../db/schema.js";
 import { decryptSecret } from "../lib/crypto.js";
 import { createAppError } from "../lib/errors.js";
+import {
+  assertRecoveryLifetimeWithinLimit,
+} from "../lib/recovery-policy.js";
+import {
+  assertAwsFullDrillSourceAvailable,
+  checkAwsSourceStatus,
+} from "./aws-source-status.service.js";
 import {
   assertSandboxConcurrency,
   assertSelfHostedAgentAllowed,
@@ -27,6 +35,7 @@ import type { RunnerAuthContext } from "../middleware/runner.js";
 import type {
   CompleteJobInput,
   CreateJobInput,
+  JobProgressInput,
   ListJobsQueryInput,
 } from "../validations/jobs.schema.js";
 import { paginationMeta, paginationOffset } from "../validations/pagination.schema.js";
@@ -35,6 +44,9 @@ function toJob(
   row: typeof jobs.$inferSelect,
   databaseName: string
 ): JobResource {
+  const metadata = isRecord(row.metadataJson) ? row.metadataJson : null;
+  const progress = metadata?.runnerProgress;
+  const runnerProgress = isRecord(progress) ? progress : null;
   return {
     id: row.id,
     databaseId: row.databaseId,
@@ -45,11 +57,25 @@ function toJob(
     triggeredByUserId: row.triggeredByUserId,
     errorMessage: row.errorMessage,
     rtoSeconds: row.rtoSeconds,
+    runnerProgress:
+      typeof runnerProgress?.stage === "string" &&
+      typeof runnerProgress.message === "string" &&
+      typeof runnerProgress.updatedAt === "string"
+        ? {
+            stage: runnerProgress.stage,
+            message: runnerProgress.message,
+            updatedAt: runnerProgress.updatedAt,
+          }
+        : null,
     startedAt: row.startedAt?.toISOString() ?? null,
     finishedAt: row.finishedAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function toResult(row: typeof jobResults.$inferSelect): JobResultResource {
@@ -162,6 +188,36 @@ export function createJobsService(db: Database, masterKey: string) {
       throw createAppError(404, "Database not found", "NOT_FOUND");
     }
 
+    if (
+      dbRows[0].recoveryMode === "aws-rds" &&
+      dbRows[0].recoveryDrillsEnabled !== "true"
+    ) {
+      throw createAppError(
+        409,
+        "Recovery validation drills are disabled for this database. Enable them in Recovery Operations before starting a drill.",
+        "RECOVERY_DRILLS_DISABLED"
+      );
+    }
+    assertRecoveryLifetimeWithinLimit(dbRows[0].recoveryMaxLifetimeMinutes);
+
+    if (dbRows[0].recoveryMode === "aws-rds") {
+      try {
+        const awsStatus = await checkAwsSourceStatus(
+          db,
+          masterKey,
+          organizationId,
+          databaseId
+        );
+        assertAwsFullDrillSourceAvailable(awsStatus);
+      } catch (error) {
+        console.error(
+          `[jobs] scheduled full drill blocked database=${databaseId}:`,
+          error instanceof Error ? error.message : error
+        );
+        throw error;
+      }
+    }
+
     await assertSubscriptionActive(db, organizationId);
     await assertSandboxConcurrency(db, organizationId);
 
@@ -199,6 +255,49 @@ export function createJobsService(db: Database, masterKey: string) {
       throw createAppError(404, "Database not found", "NOT_FOUND");
     }
 
+    if (
+      dbRows[0].recoveryMode === "aws-rds" &&
+      dbRows[0].recoveryDrillsEnabled !== "true"
+    ) {
+      throw createAppError(
+        409,
+        "Recovery validation drills are disabled for this database. Enable them in Recovery Operations before starting a drill.",
+        "RECOVERY_DRILLS_DISABLED"
+      );
+    }
+    assertRecoveryLifetimeWithinLimit(dbRows[0].recoveryMaxLifetimeMinutes);
+
+    let verificationSnapshotIdentifier: string | null = null;
+    if (input.recoveryPointId) {
+      if (input.drillKind !== "verify" || dbRows[0].recoveryMode !== "aws-rds") {
+        throw createAppError(
+          400,
+          "A recovery point can only be verified with an AWS snapshot verification job",
+          "INVALID_RECOVERY_POINT_VERIFICATION"
+        );
+      }
+      const [point] = await db
+        .select({ snapshotIdentifier: recoveryPoints.snapshotIdentifier })
+        .from(recoveryPoints)
+        .where(
+          and(
+            eq(recoveryPoints.id, input.recoveryPointId),
+            eq(recoveryPoints.organizationId, organizationId),
+            eq(recoveryPoints.databaseId, input.databaseId),
+            eq(recoveryPoints.status, "active")
+          )
+        )
+        .limit(1);
+      if (!point) {
+        throw createAppError(
+          404,
+          "Recovery point is no longer available",
+          "RECOVERY_POINT_NOT_FOUND"
+        );
+      }
+      verificationSnapshotIdentifier = point.snapshotIdentifier;
+    }
+
     const plan = await db
       .select({ id: validationPlans.id })
       .from(validationPlans)
@@ -218,6 +317,28 @@ export function createJobsService(db: Database, masterKey: string) {
       );
     }
 
+    if (
+      dbRows[0].recoveryMode === "aws-rds" &&
+      input.drillKind !== "verify"
+    ) {
+      try {
+        const awsStatus = await checkAwsSourceStatus(
+          db,
+          masterKey,
+          organizationId,
+          input.databaseId
+        );
+        assertAwsFullDrillSourceAvailable(awsStatus);
+      } catch (error) {
+        console.error(
+          `[jobs] full drill blocked database=${input.databaseId} ` +
+            `drillKind=${input.drillKind}:`,
+          error instanceof Error ? error.message : error
+        );
+        throw error;
+      }
+    }
+
     await assertSubscriptionActive(db, organizationId);
     await assertSandboxConcurrency(db, organizationId);
 
@@ -229,6 +350,9 @@ export function createJobsService(db: Database, masterKey: string) {
         status: "pending",
         trigger: input.drillKind === "verify" ? "manual" : "full-drill",
         triggeredByUserId: userId,
+        ...(verificationSnapshotIdentifier
+          ? { metadataJson: { verificationSnapshotIdentifier } }
+          : {}),
       })
       .returning();
 
@@ -276,6 +400,14 @@ export function createJobsService(db: Database, masterKey: string) {
         status: "running",
         executionMode,
         claimedByRunnerId,
+        metadataJson: {
+          ...(isRecord(job.metadataJson) ? job.metadataJson : {}),
+          runnerProgress: {
+            stage: "runner_starting",
+            message: "Runner claimed the job and is preparing the selected database.",
+            updatedAt: new Date().toISOString(),
+          },
+        },
         startedAt: new Date(),
         updatedAt: new Date(),
       })
@@ -365,14 +497,26 @@ export function createJobsService(db: Database, masterKey: string) {
         : null;
 
     const recoveryMode = database.recoveryMode === "aws-rds" ? "aws-rds" : "direct";
+    const verificationSnapshotIdentifier =
+      isRecord(job.metadataJson) &&
+      typeof job.metadataJson.verificationSnapshotIdentifier === "string"
+        ? job.metadataJson.verificationSnapshotIdentifier
+        : null;
     const recovery =
       recoveryMode === "aws-rds" && database.rdsSourceIdentifier && database.region
         ? {
             engine: "aws-rds" as const,
             sourceIdentifier: database.rdsSourceIdentifier,
             region: database.region,
+            ...(verificationSnapshotIdentifier
+              ? { snapshotIdentifier: verificationSnapshotIdentifier }
+              : {}),
             useFreetier: database.recoveryUseFreetier === "true",
             sandboxInstanceClass: database.recoverySandboxInstanceClass,
+            maxLifetimeMinutes:
+              database.recoveryMaxLifetimeMinutes,
+            cleanupCustomerSnapshots:
+              database.recoveryCleanupCustomerSnapshots === "true",
           }
         : null;
 
@@ -401,6 +545,50 @@ export function createJobsService(db: Database, masterKey: string) {
         updated.trigger === "full-drill" ||
         (recoveryMode === "aws-rds" && updated.trigger === "schedule"),
     };
+  },
+
+  async updateRunnerProgress(
+    jobId: string,
+    input: JobProgressInput,
+    auth?: RunnerAuthContext
+  ): Promise<void> {
+    const [row] = await db
+      .select({
+        job: jobs,
+      })
+      .from(jobs)
+      .where(eq(jobs.id, jobId))
+      .limit(1);
+
+    if (
+      !row ||
+      (auth?.type === "org" &&
+        (row.job.organizationId !== auth.organizationId ||
+          row.job.databaseId !== auth.databaseId))
+    ) {
+      throw createAppError(404, "Job not found", "NOT_FOUND");
+    }
+    if (row.job.status !== "running") {
+      throw createAppError(409, "Job is no longer running", "JOB_NOT_RUNNING");
+    }
+
+    const metadata = isRecord(row.job.metadataJson)
+      ? row.job.metadataJson
+      : {};
+    await db
+      .update(jobs)
+      .set({
+        metadataJson: {
+          ...metadata,
+          runnerProgress: {
+            stage: input.stage,
+            message: input.message,
+            updatedAt: new Date().toISOString(),
+          },
+        },
+        updatedAt: new Date(),
+      })
+      .where(and(eq(jobs.id, jobId), eq(jobs.status, "running")));
   },
 
   async complete(

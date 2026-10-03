@@ -23,6 +23,12 @@ export async function databasesRoutes(
     handlers.get
   );
 
+  app.get(
+    "/databases/:id/aws-status",
+    { preHandler: requirePermission("databases:read") },
+    handlers.awsSourceStatus
+  );
+
   app.post(
     "/databases",
     { preHandler: requirePermission("databases:write") },

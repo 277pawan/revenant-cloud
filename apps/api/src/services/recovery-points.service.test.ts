@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  findMissingRecoveryPointIds,
   resolveRecoverySettings,
   selectSnapshotAtVerificationTime,
   validateRecoveryTarget,
@@ -14,6 +15,20 @@ const validInput: RecoverFromPointInput = {
   vpcSecurityGroupIds: ["sg-0123456789abcdef0"],
   instanceClass: "db.t3.micro",
 };
+
+test("reconciles only tracked snapshots absent from the successful AWS listing", () => {
+  assert.deepEqual(
+    findMissingRecoveryPointIds(
+      [
+        { id: "stale", snapshotIdentifier: "snapshot-no-longer-in-aws" },
+        { id: "present", snapshotIdentifier: "snapshot-still-in-aws" },
+        { id: "synthetic", snapshotIdentifier: "latest-verified-2026-09-27" },
+      ],
+      new Set(["snapshot-still-in-aws"])
+    ),
+    ["stale"]
+  );
+});
 
 test("inherits recovery networking and instance class from the source RDS settings", () => {
   assert.deepEqual(
@@ -48,6 +63,30 @@ test("configured recovery class takes precedence over the source class", () => {
       "db.t3.micro"
     ).instanceClass,
     "db.t3.micro"
+  );
+});
+
+test("a missing source can recover into AWS default networking", () => {
+  assert.deepEqual(
+    resolveRecoverySettings({}, {}, "db.t3.micro", true),
+    {
+      dbSubnetGroupName: undefined,
+      vpcSecurityGroupIds: [],
+      instanceClass: "db.t3.micro",
+    }
+  );
+});
+
+test("recovery network overrides must include both subnet group and security groups", () => {
+  assert.throws(
+    () =>
+      resolveRecoverySettings(
+        { dbSubnetGroupName: "private-db-subnets" },
+        {},
+        "db.t3.micro",
+        true
+      ),
+    /Provide both a DB subnet group and at least one VPC security group/
   );
 });
 

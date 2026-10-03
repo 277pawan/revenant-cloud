@@ -9,6 +9,8 @@ import {
 } from "../db/schema.js";
 import { decryptSecret, encryptSecret } from "../lib/crypto.js";
 import { createAppError } from "../lib/errors.js";
+import { assertRecoveryLifetimeWithinLimit } from "../lib/recovery-policy.js";
+import { checkAwsSourceStatus } from "./aws-source-status.service.js";
 import { assertPlanLimit, assertRecoveryModeAllowed } from "../lib/plan-limits.js";
 import type {
   CreateDatabaseInput,
@@ -44,6 +46,9 @@ function toResource(
     rdsSourceIdentifier: row.rdsSourceIdentifier,
     recoveryUseFreetier: row.recoveryUseFreetier === "true",
     recoverySandboxInstanceClass: row.recoverySandboxInstanceClass,
+    recoveryDrillsEnabled: row.recoveryDrillsEnabled === "true",
+    recoveryMaxLifetimeMinutes: row.recoveryMaxLifetimeMinutes,
+    recoveryCleanupCustomerSnapshots: row.recoveryCleanupCustomerSnapshots === "true",
     description: row.description,
     hasCredentials,
     hasAwsCredentials,
@@ -274,6 +279,10 @@ export function createDatabasesService(db: Database, masterKey: string) {
 
     decryptAwsCredentials,
 
+    async checkAwsSourceStatus(organizationId: string, databaseId: string) {
+      return checkAwsSourceStatus(db, masterKey, organizationId, databaseId);
+    },
+
     async create(
       organizationId: string,
       input: CreateDatabaseInput
@@ -281,6 +290,17 @@ export function createDatabasesService(db: Database, masterKey: string) {
       await assertPlanLimit(db, organizationId, "databases");
       const recoveryMode = input.recoveryMode ?? "aws-rds";
       await assertRecoveryModeAllowed(db, organizationId, recoveryMode);
+      assertRecoveryLifetimeWithinLimit(input.recoveryMaxLifetimeMinutes);
+      if (
+        input.recoveryCleanupCustomerSnapshots === true &&
+        input.recoveryMaxLifetimeMinutes == null
+      ) {
+        throw createAppError(
+          400,
+          "Customer-created snapshot cleanup requires an automatic deletion duration",
+          "RECOVERY_RETENTION_REQUIRED"
+        );
+      }
       const [row] = await db
         .insert(databases)
         .values({
@@ -302,6 +322,19 @@ export function createDatabasesService(db: Database, masterKey: string) {
             recoveryMode === "aws-rds"
               ? input.recoverySandboxInstanceClass ?? null
               : null,
+          recoveryDrillsEnabled:
+            recoveryMode === "aws-rds" && input.recoveryDrillsEnabled === true
+              ? "true"
+              : "false",
+          recoveryMaxLifetimeMinutes:
+            recoveryMode === "aws-rds"
+              ? input.recoveryMaxLifetimeMinutes ?? null
+              : null,
+          recoveryCleanupCustomerSnapshots:
+            recoveryMode === "aws-rds" &&
+            input.recoveryCleanupCustomerSnapshots === true
+              ? "true"
+              : "false",
           description: input.description,
         })
         .returning();
@@ -332,7 +365,8 @@ export function createDatabasesService(db: Database, masterKey: string) {
       id: string,
       input: UpdateDatabaseInput
     ): Promise<DatabaseResource> {
-      await getById(organizationId, id);
+      const currentDatabase = await getById(organizationId, id);
+      assertRecoveryLifetimeWithinLimit(input.recoveryMaxLifetimeMinutes);
 
       const patch: Partial<typeof databases.$inferInsert> = {
         updatedAt: new Date(),
@@ -353,6 +387,9 @@ export function createDatabasesService(db: Database, masterKey: string) {
           patch.rdsSourceIdentifier = null;
           patch.recoveryUseFreetier = "false";
           patch.recoverySandboxInstanceClass = null;
+          patch.recoveryDrillsEnabled = "false";
+          patch.recoveryMaxLifetimeMinutes = null;
+          patch.recoveryCleanupCustomerSnapshots = "false";
         }
       }
       if (input.rdsSourceIdentifier !== undefined) {
@@ -363,6 +400,47 @@ export function createDatabasesService(db: Database, masterKey: string) {
       }
       if (input.recoverySandboxInstanceClass !== undefined) {
         patch.recoverySandboxInstanceClass = input.recoverySandboxInstanceClass;
+      }
+      if (input.recoveryDrillsEnabled !== undefined) {
+        if (
+          input.recoveryDrillsEnabled &&
+          (input.recoveryMode ?? currentDatabase.recoveryMode) !== "aws-rds"
+        ) {
+          throw createAppError(
+            400,
+            "Restore validation can only be enabled for AWS RDS databases",
+            "INVALID_RECOVERY_MODE"
+          );
+        }
+        patch.recoveryDrillsEnabled = input.recoveryDrillsEnabled ? "true" : "false";
+      }
+      if (input.recoveryMaxLifetimeMinutes !== undefined) {
+        patch.recoveryMaxLifetimeMinutes = input.recoveryMaxLifetimeMinutes;
+        if (input.recoveryMaxLifetimeMinutes === null) {
+          if (input.recoveryCleanupCustomerSnapshots === true) {
+            throw createAppError(
+              400,
+              "Customer-created snapshot cleanup requires an automatic deletion duration",
+              "RECOVERY_RETENTION_REQUIRED"
+            );
+          }
+          patch.recoveryCleanupCustomerSnapshots = "false";
+        }
+      }
+      if (input.recoveryCleanupCustomerSnapshots !== undefined) {
+        const lifetime =
+          input.recoveryMaxLifetimeMinutes !== undefined
+            ? input.recoveryMaxLifetimeMinutes
+            : currentDatabase.recoveryMaxLifetimeMinutes;
+        if (input.recoveryCleanupCustomerSnapshots && lifetime === null) {
+          throw createAppError(
+            400,
+            "Set an automatic deletion duration before enabling cleanup of customer-created snapshots",
+            "RECOVERY_RETENTION_REQUIRED"
+          );
+        }
+        patch.recoveryCleanupCustomerSnapshots =
+          input.recoveryCleanupCustomerSnapshots ? "true" : "false";
       }
 
       await db

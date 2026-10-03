@@ -120,6 +120,7 @@ export function createBillingHandlers(
             amountPaise: 100,
           },
         });
+        request.auditEventRecorded = true;
 
         const subscription = await billingService.getSubscriptionSummary(
           request.user.organizationId

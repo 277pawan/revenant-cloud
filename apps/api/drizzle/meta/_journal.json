@@ -169,6 +169,20 @@
       "when": 1789075600000,
       "tag": "0023_recovery_points",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1789076400000,
+      "tag": "0024_recovery_ttl_policy",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1790936696789,
+      "tag": "0025_recovery_cleanup_customer_snapshots",
+      "breakpoints": true
     }
   ]
 }

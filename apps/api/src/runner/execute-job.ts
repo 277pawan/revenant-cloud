@@ -19,6 +19,12 @@ import {
   stripHttpHealthFromChecksBlock,
 } from "./http-health-checks.js";
 
+type AwsRecoveryJobConfig = Omit<AwsRecoveryConfig, "maxLifetimeMinutes"> & {
+  maxLifetimeMinutes: number | null;
+  cleanupCustomerSnapshots: boolean;
+  snapshotIdentifier?: string;
+};
+
 export type ClaimedPayload = {
   job: { id: string; databaseName: string };
   database: {
@@ -32,7 +38,7 @@ export type ClaimedPayload = {
     recoveryMode?: RecoveryMode;
   };
   password: string | null;
-  recovery: AwsRecoveryConfig | null;
+  recovery: AwsRecoveryJobConfig | null;
   awsCredentials: RunnerAwsCredentials | null;
   planYaml: string | null;
   /** Recovery contract application checks (healthcheck URL + optional endpoints) */
@@ -65,6 +71,25 @@ export type ExecutionOutcome = {
   usedCli: boolean;
 };
 
+export type RunnerProgressStage =
+  | "runner_starting"
+  | "resolving_cli"
+  | "checking_source"
+  | "creating_snapshot"
+  | "waiting_for_snapshot"
+  | "selecting_snapshot"
+  | "restoring_sandbox"
+  | "waiting_for_sandbox"
+  | "connecting_sandbox"
+  | "running_checks"
+  | "cleaning_sandbox"
+  | "reaping_sandboxes";
+
+export type ReportRunnerProgress = (
+  stage: RunnerProgressStage,
+  message: string
+) => Promise<void>;
+
 type CliReport = {
   status?: string;
   checks?: Array<{ name?: string; status?: string; message?: string }>;
@@ -72,6 +97,11 @@ type CliReport = {
     snapshot_identifier?: string;
     snapshot_arn?: string;
     temporary_instance_identifier?: string;
+    run_id?: string;
+    expires_at?: string;
+    instance_class?: string;
+    estimated_storage_gb?: number;
+    rto_seconds?: number;
     cleanup_status?: string;
     cleanup_error?: string;
   };
@@ -80,10 +110,10 @@ type CliReport = {
 export function mapCliCleanupResult(
   cleanup: NonNullable<CliReport["recovery"]>
 ): CheckResult {
-  const cleanupStatus = cleanup.cleanup_status ?? "not_created";
-  const status = cleanupStatus === "deleted"
+  const cleanupStatus = cleanup.cleanup_status?.toUpperCase() ?? "NOT_CREATED";
+  const status = cleanupStatus === "CLEANED"
     ? "pass"
-    : cleanupStatus === "failed"
+    : cleanupStatus === "CLEANUP_FAILED"
       ? "fail"
       : "skip";
   const instance = cleanup.temporary_instance_identifier
@@ -94,7 +124,7 @@ export function mapCliCleanupResult(
     checkName: "temp_instance_cleanup",
     checkType: "cleanup",
     status,
-    message: `Temporary RDS${instance} cleanup ${cleanupStatus}${detail}`.slice(0, 500),
+    message: `Temporary RDS${instance} cleanup ${cleanupStatus.toLowerCase()}${detail}`.slice(0, 500),
     durationMs: 0,
   };
 }
@@ -105,6 +135,7 @@ const AWS_VERIFY_TIMEOUT_MS = Number(
 const DIRECT_VERIFY_TIMEOUT_MS = Number(
   process.env.REVENANT_VERIFY_TIMEOUT_MS ?? 120_000
 );
+const GITHUB_REQUEST_TIMEOUT_MS = 30_000;
 
 async function fileExists(path: string): Promise<boolean> {
   try {
@@ -115,9 +146,12 @@ async function fileExists(path: string): Promise<boolean> {
   }
 }
 
-export function isLocalCliOverrideAllowed(): boolean {
-  const value = (process.env.REVENANT_ALLOW_LOCAL_FALLBACK ?? "").trim().toLowerCase();
-  return value === "true" || value === "1" || value === "yes";
+export async function resolveConfiguredCliPath(
+  configuredPath = process.env.REVENANT_CLI_PATH
+): Promise<string | null> {
+  const path = configuredPath?.trim();
+  if (!path || !(await fileExists(path))) return null;
+  return path;
 }
 
 export function buildReleaseAssetName(version: string): string | null {
@@ -151,37 +185,97 @@ export function buildReleaseAssetName(version: string): string | null {
   return `revenant_${normalizedVersion}_${osName}_${archName}.${suffix}`;
 }
 
+export function buildGitHubReleaseHeaders(
+  accept: string,
+  token = process.env.REVENANT_CLI_GITHUB_TOKEN
+): Record<string, string> {
+  const normalizedToken = token?.trim();
+  return {
+    Accept: accept,
+    ...(normalizedToken ? { Authorization: `Bearer ${normalizedToken}` } : {}),
+  };
+}
+
+function cliProcessEnvironment(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  delete env.REVENANT_CLI_GITHUB_TOKEN;
+  return env;
+}
+
 async function installLatestRevenantCli(): Promise<string | null> {
   const repo = process.env.REVENANT_CLI_REPO ?? "277pawan/revenant-cli";
   const targetDir = process.env.REVENANT_CLI_DIR ?? resolve(process.cwd(), ".revenant-bin");
   const releaseVersion = process.env.REVENANT_CLI_VERSION ?? "latest";
-  const version = releaseVersion === "latest"
-    ? await fetch(`https://api.github.com/repos/${repo}/releases/latest`)
-        .then(async (res) => {
-          if (!res.ok) throw new Error(`github release lookup failed: ${res.status}`);
-          const json = (await res.json()) as { tag_name?: string };
-          if (!json.tag_name) throw new Error("latest release tag missing");
-          return json.tag_name;
-        })
-        .catch(() => null)
-    : releaseVersion;
+  const releaseEndpoint = releaseVersion === "latest"
+    ? `https://api.github.com/repos/${repo}/releases/latest`
+    : `https://api.github.com/repos/${repo}/releases/tags/${encodeURIComponent(releaseVersion)}`;
+  const token = process.env.REVENANT_CLI_GITHUB_TOKEN;
 
-  if (!version) return null;
+  console.log(
+    `[revenant-resolver] requesting GitHub release repo=${repo} version=${releaseVersion} ` +
+      `authentication=${token?.trim() ? "configured" : "not configured"}`
+  );
+  const lookupStartedAt = Date.now();
+  let releaseResponse: Response;
+  try {
+    releaseResponse = await fetch(releaseEndpoint, {
+      headers: buildGitHubReleaseHeaders("application/vnd.github+json", token),
+      signal: AbortSignal.timeout(GITHUB_REQUEST_TIMEOUT_MS),
+    });
+  } catch (error) {
+    console.warn(
+      `[revenant-resolver] GitHub release lookup request failed after ${Date.now() - lookupStartedAt}ms:`,
+      error instanceof Error ? error.message : error
+    );
+    return null;
+  }
+  if (!releaseResponse.ok) {
+    console.warn(
+      `[revenant-resolver] GitHub release lookup failed: HTTP ${releaseResponse.status} ` +
+        `(${Date.now() - lookupStartedAt}ms)`
+    );
+    return null;
+  }
+  console.log(
+    `[revenant-resolver] GitHub release lookup succeeded (${Date.now() - lookupStartedAt}ms)`
+  );
+
+  const release = (await releaseResponse.json()) as {
+    tag_name?: string;
+    assets?: Array<{ id: number; name: string }>;
+  };
+  const version = release.tag_name;
+  if (!version) {
+    console.warn("[revenant-resolver] GitHub release response did not contain a tag");
+    return null;
+  }
 
   const assetName = buildReleaseAssetName(version);
   if (!assetName) return null;
 
+  const asset = release.assets?.find((candidate) => candidate.name === assetName);
+  if (!asset) {
+    console.warn(`[revenant-resolver] release ${version} is missing expected asset ${assetName}`);
+    return null;
+  }
+
+  console.log(`[revenant-resolver] downloading CLI asset=${assetName}`);
   await mkdir(targetDir, { recursive: true });
   const installDir = targetDir;
   const archivePath = join(installDir, assetName);
-  const archiveUrl = `https://github.com/${repo}/releases/download/${version}/${assetName}`;
-  const archiveResponse = await fetch(archiveUrl);
+  const archiveUrl = `https://api.github.com/repos/${repo}/releases/assets/${asset.id}`;
+  const archiveResponse = await fetch(archiveUrl, {
+    headers: buildGitHubReleaseHeaders("application/octet-stream", token),
+    signal: AbortSignal.timeout(GITHUB_REQUEST_TIMEOUT_MS),
+  });
   if (!archiveResponse.ok) {
+    console.warn(`[revenant-resolver] GitHub release asset download failed: HTTP ${archiveResponse.status}`);
     return null;
   }
 
   const archiveBuffer = Buffer.from(await archiveResponse.arrayBuffer());
   await writeFile(archivePath, archiveBuffer);
+  console.log(`[revenant-resolver] downloaded ${archiveBuffer.byteLength} bytes; extracting CLI`);
 
   const unpackDir = join(targetDir, `extract-${Date.now()}`);
   await mkdir(unpackDir, { recursive: true });
@@ -246,21 +340,20 @@ async function installLatestRevenantCli(): Promise<string | null> {
   return finalBin;
 }
 
-/** Resolve revenant binary: latest GitHub release by default, with explicit local opt-in only. */
-export async function resolveRevenantCli(): Promise<string | null> {
-  const localFallbackAllowed = isLocalCliOverrideAllowed();
-  const fromEnv = process.env.REVENANT_CLI_PATH?.trim();
+/** Resolve the CLI once per API process; jobs reuse the same downloaded release binary. */
+let cliResolution: Promise<string | null> | null = null;
 
-  if (!localFallbackAllowed && fromEnv) {
-    delete process.env.REVENANT_CLI_PATH;
-    console.warn(
-      "[revenant-resolver] ignoring REVENANT_CLI_PATH because local fallback is disabled; using latest GitHub release only"
-    );
-  }
-
-  if (fromEnv && localFallbackAllowed && (await fileExists(fromEnv))) {
-    console.log(`[revenant-resolver] using REVENANT_CLI_PATH=${fromEnv}`);
-    return fromEnv;
+async function resolveRevenantCliOnce(): Promise<string | null> {
+  const configuredPath = process.env.REVENANT_CLI_PATH?.trim();
+  if (configuredPath) {
+    console.log("[revenant-resolver] checking explicitly configured REVENANT_CLI_PATH");
+    const configuredBinary = await resolveConfiguredCliPath(configuredPath);
+    if (!configuredBinary) {
+      console.error("[revenant-resolver] configured REVENANT_CLI_PATH does not exist or is not accessible; no alternate binary will be used");
+      return null;
+    }
+    console.log("[revenant-resolver] configured CLI binary is accessible");
+    return configuredBinary;
   }
 
   try {
@@ -270,11 +363,19 @@ export async function resolveRevenantCli(): Promise<string | null> {
       return installed;
     }
   } catch (error) {
-    console.warn("[revenant-resolver] GitHub release lookup failed:", error);
+    console.warn(
+      "[revenant-resolver] CLI installation from GitHub failed:",
+      error instanceof Error ? error.message : error
+    );
   }
 
-  console.warn("[revenant-resolver] no release binary found; refusing local repo and PATH fallback");
+  console.error("[revenant-resolver] no CLI binary available; refusing to run without real checks");
   return null;
+}
+
+export function resolveRevenantCli(): Promise<string | null> {
+  cliResolution ??= resolveRevenantCliOnce();
+  return cliResolution;
 }
 
 export function isAwsRecoveryMode(claimed: ClaimedPayload): boolean {
@@ -345,7 +446,7 @@ export function buildDirectCliConfigYaml(
 export function buildAwsCliConfigYaml(
   planYaml: string | null,
   planName: string,
-  recovery: AwsRecoveryConfig,
+  recovery: AwsRecoveryJobConfig,
   databaseId: string,
   jobId: string,
   engine: "postgres" | "mysql" = "postgres"
@@ -365,8 +466,19 @@ export function buildAwsCliConfigYaml(
     `  source_identifier: ${JSON.stringify(recovery.sourceIdentifier)}`,
     `  region: ${JSON.stringify(recovery.region)}`,
     `  database_id: ${JSON.stringify(databaseId)}`,
-    `  job_id: ${JSON.stringify(jobId)}`,
+    `  run_id: ${JSON.stringify(jobId)}`,
   ];
+  if (recovery.snapshotIdentifier) {
+    lines.push(`  snapshot_identifier: ${JSON.stringify(recovery.snapshotIdentifier)}`);
+  }
+  if (recovery.maxLifetimeMinutes === null) {
+    lines.push("  retain_resources: true");
+  } else {
+    lines.push(`  max_lifetime_minutes: ${recovery.maxLifetimeMinutes}`);
+  }
+  if (recovery.cleanupCustomerSnapshots) {
+    lines.push("  cleanup_customer_snapshots: true");
+  }
 
   if (recovery.useFreetier) {
     lines.push("  use_freetier: true");
@@ -381,12 +493,42 @@ export function buildAwsCliConfigYaml(
   return lines.join("\n");
 }
 
+function sanitizeCliOutput(value: string, env: NodeJS.ProcessEnv): string {
+  let sanitized = value;
+  for (const [key, secret] of Object.entries(env)) {
+    if (
+      secret &&
+      secret.length >= 4 &&
+      (key === "DATABASE_URL" || /(PASSWORD|SECRET|TOKEN|ACCESS_KEY)/i.test(key))
+    ) {
+      sanitized = sanitized
+        .split(secret)
+        .join(key === "DATABASE_URL" ? "[REDACTED_DATABASE_URL]" : "[REDACTED]");
+    }
+  }
+  return sanitized
+    .replace(/(https?:\/\/[^:/\s@]+:)[^@\s/]+@/gi, "$1[REDACTED]@")
+    .replace(/((?:password|passwd|secret|token|authorization)\s*[=:]\s*)\S+/gi, "$1[REDACTED]")
+    .slice(0, 2000);
+}
+
 function runCommand(
   bin: string,
   args: string[],
-  opts: { cwd: string; env: NodeJS.ProcessEnv; timeoutMs: number }
+  opts: {
+    cwd: string;
+    env: NodeJS.ProcessEnv;
+    timeoutMs: number;
+    label: string;
+    onProgress?: ReportRunnerProgress;
+    heartbeat?: { stage: RunnerProgressStage; message: string };
+  }
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
-  return new Promise((resolvePromise) => {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const startedAt = Date.now();
+    console.log(
+      `[runner-cli] starting ${opts.label} timeout=${opts.timeoutMs}ms`
+    );
     const child = spawn(bin, args, {
       cwd: opts.cwd,
       env: opts.env,
@@ -394,23 +536,183 @@ function runCommand(
     });
     let stdout = "";
     let stderr = "";
+    let stdoutLine = "";
+    let stderrLine = "";
+    let progressQueue = Promise.resolve();
+    const heartbeat = opts.heartbeat;
+    const heartbeatTimer = opts.onProgress && heartbeat
+      ? setInterval(() => {
+          progressQueue = progressQueue
+            .then(() => opts.onProgress?.(heartbeat.stage, heartbeat.message))
+            .then(() => undefined)
+            .catch((error: unknown) => {
+              console.error(
+                `[runner-cli] ${opts.label} heartbeat reporting failed:`,
+                error instanceof Error ? error.message : error
+              );
+            });
+        }, 2 * 60_000)
+      : undefined;
+    const reportLineProgress = (line: string) => {
+      const progress = mapCliOutputProgress(opts.label, line);
+      if (!progress || !opts.onProgress) return;
+      progressQueue = progressQueue
+        .then(() => opts.onProgress?.(progress.stage, progress.message))
+        .then(() => undefined)
+        .catch((error: unknown) => {
+          console.error(
+            `[runner-cli] ${opts.label} progress reporting failed:`,
+            error instanceof Error ? error.message : error
+          );
+        });
+    };
+    const logOutput = (
+      chunk: Buffer,
+      stream: "stdout" | "stderr",
+      pending: string
+    ): string => {
+      const lines = (pending + chunk.toString()).split(/\r\n|\n|\r/);
+      const remaining = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line) continue;
+        reportLineProgress(line);
+        const message = `[runner-cli] ${opts.label} ${stream}: ${sanitizeCliOutput(line, opts.env)}`;
+        if (stream === "stderr") console.error(message);
+        else console.log(message);
+      }
+      if (remaining.length > 4000) {
+        const partial = `[runner-cli] ${opts.label} ${stream}: ${sanitizeCliOutput(remaining, opts.env)}`;
+        if (stream === "stderr") console.error(partial);
+        else console.log(partial);
+        return "";
+      }
+      return remaining;
+    };
     child.stdout?.on("data", (d) => {
-      stdout += String(d);
+      const chunk = Buffer.from(d);
+      stdout += chunk.toString();
+      stdoutLine = logOutput(chunk, "stdout", stdoutLine);
     });
     child.stderr?.on("data", (d) => {
-      stderr += String(d);
+      const chunk = Buffer.from(d);
+      stderr += chunk.toString();
+      stderrLine = logOutput(chunk, "stderr", stderrLine);
     });
+    let timedOut = false;
     const timer = setTimeout(() => {
+      timedOut = true;
+      console.error(`[runner-cli] ${opts.label} exceeded timeout; stopping process`);
       child.kill("SIGKILL");
     }, opts.timeoutMs);
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
+      console.error(
+        `[runner-cli] ${opts.label} failed to start after ${Date.now() - startedAt}ms:`,
+        error.message
+      );
+      rejectPromise(error);
+    });
     child.on("close", (code) => {
       clearTimeout(timer);
-      resolvePromise({ code, stdout, stderr });
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
+      if (stdoutLine) {
+        console.log(
+          `[runner-cli] ${opts.label} stdout: ${sanitizeCliOutput(stdoutLine, opts.env)}`
+        );
+      }
+      if (stderrLine) {
+        console.error(
+          `[runner-cli] ${opts.label} stderr: ${sanitizeCliOutput(stderrLine, opts.env)}`
+        );
+      }
+      console.log(
+        `[runner-cli] finished ${opts.label} exitCode=${code ?? "unknown"} ` +
+          `timedOut=${timedOut} duration=${Date.now() - startedAt}ms`
+      );
+      void progressQueue.then(() => resolvePromise({ code, stdout, stderr }));
     });
+
   });
 }
 
-function mapCliReport(report: CliReport): CheckResult[] {
+export function mapCliOutputProgress(
+  label: string,
+  line: string
+): { stage: RunnerProgressStage; message: string } | null {
+  const normalized = line.toLowerCase();
+  if (label.includes("step=snapshot")) {
+    if (
+      normalized.includes("waiting") && normalized.includes("snapshot") ||
+      normalized.includes("snapshot status")
+    ) {
+      return {
+        stage: "waiting_for_snapshot",
+        message: "Waiting for AWS to finish creating the snapshot.",
+      };
+    }
+    if (normalized.includes("creating") && normalized.includes("snapshot")) {
+      return {
+        stage: "creating_snapshot",
+        message: "Creating a new AWS snapshot of the source database.",
+      };
+    }
+  }
+  if (label.includes("step=verify")) {
+    if (normalized.includes("finding") && normalized.includes("snapshot")) {
+      return {
+        stage: "selecting_snapshot",
+        message: "Finding the latest eligible AWS snapshot.",
+      };
+    }
+    if (normalized.includes("restoring") && normalized.includes("sandbox")) {
+      return {
+        stage: "restoring_sandbox",
+        message: "AWS is provisioning a temporary database from the snapshot.",
+      };
+    }
+    if (
+      normalized.includes("waiting") && normalized.includes("sandbox") ||
+      normalized.includes("instance status")
+    ) {
+      return {
+        stage: "waiting_for_sandbox",
+        message: "Waiting for the temporary AWS database to become available.",
+      };
+    }
+    if (normalized.includes("connecting") && normalized.includes("sandbox")) {
+      return {
+        stage: "connecting_sandbox",
+        message: "Connecting to the restored database before validation.",
+      };
+    }
+    if (
+      normalized.includes("running") && normalized.includes("check") ||
+      normalized.includes("validation check") ||
+      normalized.includes("connected to postgres")
+    ) {
+      return {
+        stage: "running_checks",
+        message: "Running the configured validation checks on the restored database.",
+      };
+    }
+    if (
+      normalized.includes("cleaning up") ||
+      normalized.includes("destroying temporary")
+    ) {
+      return {
+        stage: "cleaning_sandbox",
+        message: "Requesting deletion of the temporary validation database.",
+      };
+    }
+  }
+  return null;
+}
+
+export function mapCliReport(
+  report: CliReport,
+  checkType?: string
+): CheckResult[] {
   const checks = report.checks ?? [];
   if (checks.length === 0) {
     return [
@@ -428,7 +730,7 @@ function mapCliReport(report: CliReport): CheckResult[] {
     const st = (c.status ?? "FAIL").toUpperCase();
     return {
       checkName: name,
-      checkType: name.split(":")[0] ?? "check",
+      checkType: checkType ?? name.split(":")[0] ?? "check",
       status: st === "PASS" ? ("pass" as const) : ("fail" as const),
       message: c.message ?? st,
       durationMs: 0,
@@ -436,10 +738,11 @@ function mapCliReport(report: CliReport): CheckResult[] {
   });
 }
 
-function buildCliEnv(
+export function buildCliEnv(
   claimed: ClaimedPayload,
   awsMode: boolean
 ): { env: NodeJS.ProcessEnv; error?: string } {
+  const baseEnv = cliProcessEnvironment();
   if (awsMode) {
     const { username, databaseName } = claimed.database;
     const recovery = claimed.recovery;
@@ -447,19 +750,19 @@ function buildCliEnv(
 
     if (!recovery?.sourceIdentifier || !recovery.region) {
       return {
-        env: process.env,
+        env: baseEnv,
         error: "AWS recovery config incomplete — set RDS instance ID and region",
       };
     }
     if (!aws?.accessKeyId || !aws.secretAccessKey) {
       return {
-        env: process.env,
+        env: baseEnv,
         error: "AWS credentials missing — add access keys on the database",
       };
     }
     if (!username || !claimed.password || !databaseName) {
       return {
-        env: process.env,
+        env: baseEnv,
         error:
           "RDS master username, password, and database name required for sandbox connection",
       };
@@ -467,7 +770,7 @@ function buildCliEnv(
 
     return {
       env: {
-        ...process.env,
+        ...baseEnv,
         AWS_ACCESS_KEY_ID: aws.accessKeyId,
         AWS_SECRET_ACCESS_KEY: aws.secretAccessKey,
         ...(aws.sessionToken ? { AWS_SESSION_TOKEN: aws.sessionToken } : {}),
@@ -485,14 +788,14 @@ function buildCliEnv(
   const databaseUrl = buildDatabaseUrl(claimed);
   if (!databaseUrl) {
     return {
-      env: process.env,
+      env: baseEnv,
       error: "Missing host, database name, username, or password",
     };
   }
 
   return {
     env: {
-      ...process.env,
+      ...baseEnv,
       DATABASE_URL: databaseUrl,
     },
   };
@@ -501,13 +804,19 @@ function buildCliEnv(
 async function runWithCli(
   claimed: ClaimedPayload,
   cliPath: string,
-  executionMode: "stub" | "agent" | "ci"
+  executionMode: "stub" | "agent" | "ci",
+  reportProgress: ReportRunnerProgress
 ): Promise<ExecutionOutcome> {
   const started = Date.now();
   const awsMode = isAwsRecoveryMode(claimed);
+  console.log(
+    `[runner] job=${claimed.job.id} preparing CLI execution mode=${executionMode} ` +
+      `databaseEngine=${claimed.database.engine} recovery=${awsMode ? "aws-rds" : "direct"}`
+  );
   const { env, error } = buildCliEnv(claimed, awsMode);
 
   if (error) {
+    console.error(`[runner] job=${claimed.job.id} CLI configuration failed: ${error}`);
     return {
       status: "fail",
       executionMode,
@@ -548,16 +857,76 @@ async function runWithCli(
     const timeoutMs = awsMode ? AWS_VERIFY_TIMEOUT_MS : DIRECT_VERIFY_TIMEOUT_MS;
     const results: CheckResult[] = [];
     const fullDrill = Boolean(claimed.fullDrill && awsMode);
+    if (awsMode && claimed.recovery) {
+      console.log(
+        `[runner] job=${claimed.job.id} AWS resource estimate ` +
+          `temporaryRdsInstances=1 ` +
+          `newSnapshot=${fullDrill} ` +
+          `instanceClass=${claimed.recovery.sandboxInstanceClass ?? (claimed.recovery.useFreetier ? "db.t3.micro" : "db.t4g.micro")} ` +
+          `retention=${claimed.recovery.maxLifetimeMinutes === null ? "indefinite" : `${claimed.recovery.maxLifetimeMinutes}m`} ` +
+          `publiclyAccessible=true pricingEstimate=unavailable`
+      );
+    }
+    console.log(
+      `[runner] job=${claimed.job.id} CLI config written; ` +
+        `verification=${awsMode ? "AWS recovery" : "direct database"} ` +
+        `timeout=${timeoutMs}ms fullDrill=${fullDrill}`
+    );
 
     if (fullDrill) {
+      await reportProgress(
+        "checking_source",
+        "Checking the live source database against the validation plan."
+      );
       const snapStarted = Date.now();
       const snap = await runCommand(cliPath, ["snapshot", "-c", configPath], {
         cwd: dir,
         env,
         timeoutMs: AWS_VERIFY_TIMEOUT_MS,
+        label: `job=${claimed.job.id} step=snapshot`,
+        onProgress: reportProgress,
+        heartbeat: {
+          stage: "waiting_for_snapshot",
+          message: "The full-drill snapshot creation and source validation are still running.",
+        },
       });
       const snapOk = snap.code === 0;
-      results.push({
+      let snapshotReport: CliReport = {};
+      if (await fileExists(reportPath)) {
+        try {
+          snapshotReport = JSON.parse(await readFile(reportPath, "utf8")) as CliReport;
+        } catch (error) {
+          console.error(
+            `[runner] job=${claimed.job.id} snapshot report could not be parsed:`,
+            error instanceof Error ? error.message : error
+          );
+        }
+      }
+      const sourceChecks = snapshotReport.checks?.length
+        ? mapCliReport(snapshotReport, "source_validation")
+        : [];
+      results.push(...sourceChecks);
+      const generatedSnapshot = snapshotReport.recovery;
+      if (generatedSnapshot?.snapshot_identifier) {
+        const retention =
+          generatedSnapshot.cleanup_status === "RETAINED"
+            ? "retained indefinitely by policy"
+            : generatedSnapshot.expires_at
+              ? `scheduled for deletion after ${generatedSnapshot.expires_at}`
+              : "automatic deletion status unavailable";
+        results.push({
+          checkName: "drill_snapshot_cleanup",
+          checkType: "cleanup",
+          status:
+            generatedSnapshot.cleanup_status === "RETAINED" ||
+            generatedSnapshot.expires_at
+              ? "skip"
+              : "fail",
+          message: `Full-drill snapshot ${generatedSnapshot.snapshot_identifier} ${retention}.`,
+          durationMs: 0,
+        });
+      }
+      const snapshotResult: CheckResult = {
         checkName: "snapshot",
         checkType: "snapshot",
         status: snapOk ? "pass" : "fail",
@@ -565,19 +934,44 @@ async function runWithCli(
           ? (snap.stdout || "RDS snapshot created").slice(0, 400)
           : (snap.stderr || snap.stdout || "revenant snapshot failed").slice(0, 500),
         durationMs: Date.now() - snapStarted,
-      });
+      };
+      results.push(snapshotResult);
       if (!snapOk) {
+        console.error(
+          `[runner] job=${claimed.job.id} snapshot failed after ${Date.now() - snapStarted}ms`
+        );
         return {
           status: "fail",
           executionMode,
           usedCli: true,
           rtoSeconds: Math.max(1, Math.round((Date.now() - started) / 1000)),
-          errorMessage: results[0]?.message,
+          errorMessage: snapshotResult.message,
           results,
         };
       }
+    } else if (awsMode) {
+      await reportProgress(
+        "selecting_snapshot",
+        "Finding the latest eligible AWS snapshot; this run will not create a new snapshot."
+      );
+    } else {
+      await reportProgress(
+        "checking_source",
+        "Connecting to the configured database and preparing its validation checks."
+      );
     }
 
+    if (awsMode) {
+      await reportProgress(
+        "selecting_snapshot",
+        "Selecting a snapshot, then AWS will provision a temporary validation database."
+      );
+    } else {
+      await reportProgress(
+        "running_checks",
+        "Running the configured validation checks."
+      );
+    }
     const { code, stdout, stderr } = await runCommand(
       cliPath,
       ["verify", "-c", configPath, "-o", reportPath, "--markdown", join(dir, "report.md")],
@@ -585,6 +979,16 @@ async function runWithCli(
         cwd: dir,
         env,
         timeoutMs,
+        label: `job=${claimed.job.id} step=verify`,
+        onProgress: reportProgress,
+        ...(awsMode
+          ? {
+              heartbeat: {
+                stage: "restoring_sandbox" as const,
+                message: "AWS snapshot restore and validation are still running.",
+              },
+            }
+          : {}),
       }
     );
 
@@ -596,6 +1000,13 @@ async function runWithCli(
     }
 
     const verifyResults = mapCliReport(report);
+    const connectionCheck = verifyResults.find((result) => result.checkType === "connect");
+    console.log(
+      `[runner] job=${claimed.job.id} verification report loaded ` +
+        `exitCode=${code ?? "unknown"} checks=${verifyResults.length} ` +
+        `databaseConnect=${connectionCheck?.status ?? "not reported"} ` +
+        `reportStatus=${report.status ?? "missing"}`
+    );
     if (verifyResults.length === 0 && (stdout || stderr)) {
       verifyResults.push({
         checkName: "verify",
@@ -629,36 +1040,23 @@ async function runWithCli(
       verifyResults.some((r) => r.status === "fail") ||
       results.some((r) => r.checkType === "http_health" && r.status === "fail");
 
-    if (fullDrill) {
-      const reapStarted = Date.now();
-      const reap = await runCommand(
-        cliPath,
-        ["reap", "--max-age", "2h", "--region", claimed.recovery?.region ?? ""],
-        { cwd: dir, env, timeoutMs: 180_000 }
-      );
-      results.push({
-        checkName: "reap",
-        checkType: "reap",
-        status: reap.code === 0 ? "pass" : "skip",
-        message:
-          reap.code === 0
-            ? (reap.stdout || "Orphan sandboxes cleaned").slice(0, 400)
-            : (reap.stderr || reap.stdout || "reap skipped").slice(0, 400),
-        durationMs: Date.now() - reapStarted,
-      });
-    }
-
-    const failed = verifyFailed || results.some((r) => r.status === "fail");
     const cleanup = report.recovery;
     if (cleanup) {
       results.push(mapCliCleanupResult(cleanup));
     }
+    const failed = verifyFailed || results.some((r) => r.status === "fail");
+    console.log(
+      `[runner] job=${claimed.job.id} CLI execution ${failed ? "failed" : "passed"} ` +
+        `duration=${Date.now() - started}ms`
+    );
 
     return {
       status: failed ? "fail" : "pass",
       executionMode,
       usedCli: true,
-      rtoSeconds: Math.max(1, Math.round((Date.now() - started) / 1000)),
+      rtoSeconds:
+        report.recovery?.rto_seconds ??
+        Math.max(1, Math.round((Date.now() - started) / 1000)),
       errorMessage: failed
         ? (stderr || stdout || "revenant verify failed").slice(0, 500)
         : undefined,
@@ -669,95 +1067,48 @@ async function runWithCli(
   }
 }
 
-async function runMetadataFallback(
-  claimed: ClaimedPayload,
+export function cliUnavailableOutcome(
   executionMode: "stub" | "agent" | "ci",
   reason: string
-): Promise<ExecutionOutcome> {
-  const started = Date.now();
-  const awsMode = isAwsRecoveryMode(claimed);
-  const hasTarget = awsMode
-    ? Boolean(
-        claimed.recovery?.sourceIdentifier &&
-          claimed.awsCredentials &&
-          claimed.password &&
-          claimed.database.username
-      )
-    : Boolean(claimed.database.host && claimed.password);
-  const hasPlan = Boolean(claimed.planYaml);
-  const simulated = executionMode === "stub";
-
-  const results: CheckResult[] = [
-    {
-      checkName: awsMode ? "aws-recovery" : "connect",
-      checkType: awsMode ? "aws-rds" : "connect",
-      status: hasTarget ? "pass" : "fail",
-      message: `${simulated ? "[SIMULATED] " : ""}${
-        hasTarget
-          ? awsMode
-            ? `AWS restore drill configured for ${claimed.recovery?.sourceIdentifier} (${reason})`
-            : `Target ${claimed.database.host}:${claimed.database.port ?? 5432} received (${reason})`
-          : awsMode
-            ? "Missing AWS recovery config or credentials"
-            : "Missing host or password"
-      }`,
-      durationMs: 40,
-    },
-    {
-      checkName: "plan",
-      checkType: "plan",
-      status: hasPlan ? "pass" : "fail",
-      message: `${simulated ? "[SIMULATED] " : ""}${
-        hasPlan ? "Validation plan present" : "No validation plan"
-      }`,
-      durationMs: 10,
-    },
-  ];
-
-  const httpSpecs = collectHttpHealthSpecs(claimed.planYaml, claimed.contractApplication);
-  if (httpSpecs.length > 0) {
-    results.push(...(await runHttpHealthChecks(httpSpecs)));
-  }
-
-  const failed = results.some((r) => r.status === "fail");
+): ExecutionOutcome {
+  const message = `Managed validation did not run because the Revenant CLI is unavailable: ${reason}`;
   return {
-    status: failed ? "fail" : "pass",
+    status: "fail",
     executionMode,
     usedCli: false,
-    rtoSeconds: Math.max(1, Math.round((Date.now() - started) / 1000)),
-    errorMessage: failed
-      ? simulated
-        ? "Stub checks failed (SIMULATED — not a real DB check)"
-        : "Agent checks failed (CLI not available)"
-      : undefined,
-    results,
+    rtoSeconds: 1,
+    errorMessage: message,
+    results: [{
+      checkName: "revenant_cli",
+      checkType: "runner",
+      status: "fail",
+      message,
+      durationMs: 0,
+    }],
   };
 }
 
 /**
- * Execute a claimed job: prefer real `revenant verify`, else metadata fallback.
- * Stub mode still tries CLI when available so local `npm run dev` can be real.
+ * Execute a claimed job with the real Revenant CLI. Missing CLI is a hard failure.
  */
 export async function executeClaimedJob(
   claimed: ClaimedPayload,
-  executionMode: "stub" | "agent" | "ci"
+  executionMode: "stub" | "agent" | "ci",
+  reportProgress: ReportRunnerProgress = async () => {}
 ): Promise<ExecutionOutcome> {
-  const forceSim =
-    process.env.REVENANT_FORCE_SIMULATE === "true" ||
-    (executionMode === "stub" && process.env.REVENANT_STUB_SIMULATE === "true");
-
-  if (forceSim) {
-    return await runMetadataFallback(claimed, executionMode, "forced simulation");
-  }
-
+  await reportProgress(
+    "resolving_cli",
+    "Checking runner CLI availability and private release access."
+  );
+  console.log(`[runner] resolving CLI for job=${claimed.job.id} mode=${executionMode}`);
   const cli = await resolveRevenantCli();
   if (!cli) {
-    return await runMetadataFallback(
-      claimed,
+    console.error(`[runner] job=${claimed.job.id} cannot execute: Revenant CLI unavailable`);
+    return cliUnavailableOutcome(
       executionMode,
-      "revenant CLI not found — latest GitHub release could not be fetched, or local fallback is disabled"
+      "configure a valid REVENANT_CLI_PATH or provide REVENANT_CLI_GITHUB_TOKEN with access to a published private CLI release"
     );
   }
 
-  return runWithCli(claimed, cli, executionMode);
+  return runWithCli(claimed, cli, executionMode, reportProgress);
 }

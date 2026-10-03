@@ -3,6 +3,7 @@ import {
   completeJobSchema,
   createJobSchema,
   jobIdParamSchema,
+  jobProgressSchema,
   listJobsQuerySchema,
 } from "../validations/jobs.schema.js";
 import type { JobsService } from "../services/jobs.service.js";
@@ -115,6 +116,7 @@ export function createJobsHandlers(
           resourceId: job.id,
           metadata: { databaseId: job.databaseId },
         });
+        request.auditEventRecorded = true;
         return { job };
       } catch (err) {
         return sendHandlerError(err, request, reply, "Failed to cancel drill");
@@ -131,6 +133,7 @@ export function createJobsHandlers(
         });
       }
 
+      const startedAt = Date.now();
       try {
         const job = await jobsService.create(
           request.user.organizationId,
@@ -149,8 +152,18 @@ export function createJobsHandlers(
             drillKind: body.data.drillKind,
           },
         });
+        request.auditEventRecorded = true;
+        console.log(
+          `[jobs] queued job=${job.id} database=${job.databaseId} ` +
+            `trigger=${job.trigger} drillKind=${body.data.drillKind} ` +
+            `duration=${Date.now() - startedAt}ms`
+        );
         return reply.status(201).send({ job });
       } catch (err) {
+        console.error(
+          `[jobs] queue failed after ${Date.now() - startedAt}ms:`,
+          err instanceof Error ? err.message : err
+        );
         return sendHandlerError(err, request, reply, "Failed to create job");
       }
     },
@@ -162,14 +175,53 @@ export function createJobsHandlers(
           .send({ error: "Unauthorized runner", code: "UNAUTHORIZED" });
       }
 
+      const startedAt = Date.now();
       try {
         const claimed = await jobsService.claimNext(request.runnerAuth);
         if (!claimed) {
           return reply.status(204).send();
         }
+        const runnerMode = request.runnerAuth.type === "stub"
+          ? "stub"
+          : request.runnerAuth.kind;
+        console.log(
+          `[jobs] claimed job=${claimed.job.id} by runnerMode=${runnerMode} ` +
+            `duration=${Date.now() - startedAt}ms`
+        );
         return claimed;
       } catch (err) {
+        console.error(
+          `[jobs] claim failed after ${Date.now() - startedAt}ms:`,
+          err instanceof Error ? err.message : err
+        );
         return sendHandlerError(err, request, reply, "Failed to claim job");
+      }
+    },
+
+    progress: async (request: FastifyRequest, reply: FastifyReply) => {
+      const params = jobIdParamSchema.safeParse(request.params);
+      const body = jobProgressSchema.safeParse(request.body);
+      if (!params.success || !body.success) {
+        return reply.status(400).send({
+          error: "Invalid runner progress",
+          code: "VALIDATION_ERROR",
+        });
+      }
+      if (!request.runnerAuth) {
+        return reply
+          .status(401)
+          .send({ error: "Unauthorized runner", code: "UNAUTHORIZED" });
+      }
+
+      try {
+        await jobsService.updateRunnerProgress(
+          params.data.id,
+          body.data,
+          request.runnerAuth
+        );
+        return reply.status(204).send();
+      } catch (err) {
+        return sendHandlerError(err, request, reply, "Failed to update job progress");
       }
     },
 
@@ -190,11 +242,22 @@ export function createJobsHandlers(
         });
       }
 
+      const startedAt = Date.now();
+      const runnerMode = request.runnerAuth?.type === "stub"
+        ? "stub"
+        : request.runnerAuth?.kind ?? "unknown";
+      console.log(
+        `[jobs] completion received job=${params.data.id} runnerMode=${runnerMode}`
+      );
       try {
         const job = await jobsService.complete(
           params.data.id,
           body.data,
           request.runnerAuth
+        );
+        console.log(
+          `[jobs] completion persisted job=${job.id} status=${job.status} ` +
+            `duration=${Date.now() - startedAt}ms; processing evidence and notifications`
         );
 
         const orgId =
@@ -208,9 +271,31 @@ export function createJobsHandlers(
         await webhooksService.dispatchForJob(orgId, detail);
         await webhooksService.dispatchContractBreachIfNeeded(orgId, detail);
         await webhooksService.dispatchContractRegressionIfNeeded(orgId, detail);
+        await auditService.log({
+          organizationId: orgId,
+          actorUserId: null,
+          action: "job.complete",
+          resourceType: "job",
+          resourceId: job.id,
+          metadata: {
+            databaseId: job.databaseId,
+            status: job.status,
+            completedBy: request.runnerAuth?.type ?? "unknown_runner",
+          },
+        });
+        request.auditEventRecorded = true;
+        console.log(
+          `[jobs] completion processing finished job=${job.id} ` +
+            `duration=${Date.now() - startedAt}ms`
+        );
 
         return { job };
       } catch (err) {
+        console.error(
+          `[jobs] completion processing failed job=${params.data.id} ` +
+            `after ${Date.now() - startedAt}ms:`,
+          err instanceof Error ? err.message : err
+        );
         return sendHandlerError(err, request, reply, "Failed to complete job");
       }
     },

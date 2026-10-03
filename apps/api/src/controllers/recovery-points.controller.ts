@@ -2,6 +2,7 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import { databaseIdParamSchema } from "../validations/databases.schema.js";
 import { z } from "zod";
 import type { RecoveryPointsService } from "../services/recovery-points.service.js";
+import type { AuditService } from "../services/audit.service.js";
 import { sendHandlerError } from "../lib/http.js";
 
 const recoveryPointIdParamSchema = z.object({ id: z.string().uuid() });
@@ -16,7 +17,8 @@ const recoverBodySchema = z.object({
 });
 
 export function createRecoveryPointsHandlers(
-  recoveryPointsService: RecoveryPointsService
+  recoveryPointsService: RecoveryPointsService,
+  auditService: AuditService
 ) {
   return {
     listForDatabase: async (request: FastifyRequest, reply: FastifyReply) => {
@@ -111,6 +113,22 @@ export function createRecoveryPointsHandlers(
           params.data.id,
           body.data
         );
+        if (!result.resolvedOnly) {
+          await auditService.log({
+            organizationId: request.user.organizationId,
+            actorUserId: request.user.id,
+            action: "recovery.restore",
+            resourceType: "recovery_instance",
+            resourceId: result.instance.id,
+            metadata: {
+              recoveryPointId: result.recoveryPointId,
+              runId: result.runId,
+              targetIdentifier: body.data.targetIdentifier,
+              snapshotIdentifier: result.snapshotIdentifier,
+            },
+          });
+          request.auditEventRecorded = true;
+        }
         return reply.status(202).send(result);
       } catch (err) {
         return sendHandlerError(err, request, reply, "Recovery not available yet");

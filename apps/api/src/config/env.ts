@@ -58,8 +58,10 @@ const envSchema = z.object({
       if (v === "false") return false;
       return (process.env.NODE_ENV ?? "development") !== "production";
     }),
-  /** Optional absolute path to revenant CLI binary */
+  /** Explicit absolute CLI binary path for local development; never searches PATH */
   REVENANT_CLI_PATH: z.string().optional(),
+  /** Cloud Run Secret Manager token used only to download the private CLI */
+  REVENANT_CLI_GITHUB_TOKEN: z.string().optional(),
   /** Directory for signed evidence JSON artifacts */
   EVIDENCE_DIR: z.string().default("./data/evidence"),
   /**

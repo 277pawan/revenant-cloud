@@ -43,6 +43,7 @@ export function createSettingsHandlers(
           resourceId: organization.id,
           metadata: { name: organization.name },
         });
+        request.auditEventRecorded = true;
         return { organization };
       } catch (err) {
         return sendHandlerError(err, request, reply, "Failed to update organization");

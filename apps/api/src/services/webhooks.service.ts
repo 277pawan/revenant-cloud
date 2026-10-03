@@ -25,6 +25,7 @@ import { deliverToProvider, INTEGRATION_PROVIDERS } from "../integrations/delive
 import { encryptSecret } from "../lib/crypto.js";
 import { createAppError } from "../lib/errors.js";
 import type { Env } from "../config/env.js";
+import type { AuditService } from "./audit.service.js";
 import { assertPlanLimit } from "../lib/plan-limits.js";
 import type { CreateWebhookInput } from "../validations/webhooks.schema.js";
 import {
@@ -145,7 +146,12 @@ function emailConfigForStorage(
   };
 }
 
-export function createWebhooksService(db: Database, masterKey: string, env: Env) {
+export function createWebhooksService(
+  db: Database,
+  masterKey: string,
+  env: Env,
+  auditService: AuditService
+) {
   return {
     listProviders() {
       return { providers: INTEGRATION_PROVIDERS };
@@ -495,16 +501,39 @@ export function createWebhooksService(db: Database, masterKey: string, env: Env)
           }
         }
 
-        await db.insert(webhookDeliveries).values({
-          organizationId,
-          endpointId: endpoint.id,
-          jobId: job.id,
-          event,
-          status: ok ? "delivered" : "failed",
-          httpStatus: httpStatus ?? null,
-          errorMessage: errorMessage ?? null,
-          attempts,
-        });
+        const [delivery] = await db
+          .insert(webhookDeliveries)
+          .values({
+            organizationId,
+            endpointId: endpoint.id,
+            jobId: job.id,
+            event,
+            status: ok ? "delivered" : "failed",
+            httpStatus: httpStatus ?? null,
+            errorMessage: errorMessage ?? null,
+            attempts,
+          })
+          .returning({ id: webhookDeliveries.id });
+
+        try {
+          await auditService.log({
+            organizationId,
+            actorUserId: null,
+            action: `webhook.delivery.${ok ? "delivered" : "failed"}`,
+            resourceType: "webhook_delivery",
+            resourceId: delivery.id,
+            metadata: {
+              endpointId: endpoint.id,
+              jobId: job.id,
+              event,
+              status: ok ? "delivered" : "failed",
+              httpStatus: httpStatus ?? null,
+              attempts,
+            },
+          });
+        } catch (error) {
+          console.error("Failed to record webhook delivery audit event", error);
+        }
       }
     },
   };

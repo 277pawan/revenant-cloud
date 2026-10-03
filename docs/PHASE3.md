@@ -38,6 +38,13 @@ Runner claim returns (runner-only, never in public APIs):
 - Database wizard / edit: **Direct** vs **AWS RDS snapshot restore**
 - AWS fields: instance ID, region, master user/pass/db, IAM keys, free tier toggle
 
+### 3.4 AWS source preflight and diagnostics
+
+- The Databases page checks each configured AWS source in its saved region and shows whether the RDS instance is available, missing, or could not be checked. If a source is missing, it also checks for available snapshots and links to Recovery Points.
+- Full and scheduled drills are checked again by the API before being queued. A missing or unavailable source is rejected immediately, rather than spending runner time on a job that cannot create a source snapshot.
+- Existing recovery points remain usable when their source instance has been deleted. A retained restore can use the source network settings when available, or AWS default networking; users may supply both a DB subnet group and VPC security group IDs when needed.
+- The runner streams sanitized Revenant CLI output to the API console with job/step prefixes. Logs include API/database/CLI/AWS stages and durations; credentials and the source database URL are redacted. Fastify request logging remains disabled.
+
 ## How to test locally
 
 ```bash

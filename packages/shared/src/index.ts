@@ -259,6 +259,7 @@ export interface AwsRecoveryConfig {
   region: string;
   useFreetier: boolean;
   sandboxInstanceClass: string | null;
+  maxLifetimeMinutes: number | null;
 }
 
 /** Runner-only — never exposed on public database APIs */
@@ -283,6 +284,9 @@ export interface DatabaseResource {
   rdsSourceIdentifier: string | null;
   recoveryUseFreetier: boolean;
   recoverySandboxInstanceClass: string | null;
+  recoveryDrillsEnabled: boolean;
+  recoveryMaxLifetimeMinutes: number | null;
+  recoveryCleanupCustomerSnapshots: boolean;
   description: string | null;
   hasCredentials: boolean;
   hasAwsCredentials: boolean;
@@ -307,6 +311,9 @@ export interface CreateDatabaseRequest {
   rdsSourceIdentifier?: string;
   recoveryUseFreetier?: boolean;
   recoverySandboxInstanceClass?: string;
+  recoveryDrillsEnabled?: boolean;
+  recoveryMaxLifetimeMinutes?: number | null;
+  recoveryCleanupCustomerSnapshots?: boolean;
   awsAccessKeyId?: string;
   awsSecretAccessKey?: string;
   awsSessionToken?: string;
@@ -327,6 +334,9 @@ export interface UpdateDatabaseRequest {
   rdsSourceIdentifier?: string | null;
   recoveryUseFreetier?: boolean;
   recoverySandboxInstanceClass?: string | null;
+  recoveryDrillsEnabled?: boolean;
+  recoveryMaxLifetimeMinutes?: number | null;
+  recoveryCleanupCustomerSnapshots?: boolean;
   awsAccessKeyId?: string;
   awsSecretAccessKey?: string;
   awsSessionToken?: string;
@@ -428,6 +438,11 @@ export interface JobResource {
   triggeredByUserId: string | null;
   errorMessage: string | null;
   rtoSeconds: number | null;
+  runnerProgress?: {
+    stage: string;
+    message: string;
+    updatedAt: string;
+  } | null;
   startedAt: string | null;
   finishedAt: string | null;
   createdAt: string;

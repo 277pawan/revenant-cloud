@@ -9,6 +9,7 @@ export const listJobsQuerySchema = paginationQuerySchema.extend({
 export const createJobSchema = z.object({
   databaseId: z.string().uuid(),
   drillKind: z.enum(["verify", "full"]).default("full"),
+  recoveryPointId: z.string().uuid().optional(),
 });
 
 export const jobIdParamSchema = z.object({
@@ -34,6 +35,25 @@ export const completeJobSchema = z.object({
     .default([]),
 });
 
+export const jobProgressSchema = z.object({
+  stage: z.enum([
+    "runner_starting",
+    "resolving_cli",
+    "checking_source",
+    "creating_snapshot",
+    "waiting_for_snapshot",
+    "selecting_snapshot",
+    "restoring_sandbox",
+    "waiting_for_sandbox",
+    "connecting_sandbox",
+    "running_checks",
+    "cleaning_sandbox",
+    "reaping_sandboxes",
+  ]),
+  message: z.string().trim().min(1).max(255),
+});
+
 export type ListJobsQueryInput = z.infer<typeof listJobsQuerySchema>;
 export type CreateJobInput = z.infer<typeof createJobSchema>;
 export type CompleteJobInput = z.infer<typeof completeJobSchema>;
+export type JobProgressInput = z.infer<typeof jobProgressSchema>;

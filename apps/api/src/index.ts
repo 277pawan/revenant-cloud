@@ -8,18 +8,41 @@ import { createJobsService } from "./services/jobs.service.js";
 import { createDb } from "./db/index.js";
 
 const env = loadEnv();
+console.log(
+  `[api] configuration validated — host=${env.API_HOST} port=${env.API_PORT} ` +
+    `environment=${env.NODE_ENV} embeddedRunner=${env.EMBEDDED_RUNNER} ` +
+    `embeddedScheduler=${env.EMBEDDED_SCHEDULER} ` +
+    `cliPath=${process.env.REVENANT_CLI_PATH?.trim() ? "configured" : "not configured"} ` +
+    `githubReleaseToken=${process.env.REVENANT_CLI_GITHUB_TOKEN?.trim() ? "configured" : "not configured"}`
+);
+console.log("[api] building application...");
 const app = await buildApp(env);
+console.log("[api] application built; checking database connection...");
 
 try {
+  const dbCheckStartedAt = Date.now();
+  try {
+    await app.db.$client.query("SELECT 1");
+    console.log(`[api] database connected (${Date.now() - dbCheckStartedAt}ms)`);
+  } catch (err) {
+    console.error(
+      `[api] database connection failed after ${Date.now() - dbCheckStartedAt}ms; ` +
+        "the API will start, but database-backed requests may fail:",
+      err instanceof Error ? err.message : err
+    );
+  }
+
+  console.log(`[api] starting HTTP server on ${env.API_HOST}:${env.API_PORT}...`);
   await app.listen({ port: env.API_PORT, host: env.API_HOST });
   console.log(`API listening on http://${env.API_HOST}:${env.API_PORT}`);
 
   if (env.EMBEDDED_RUNNER) {
     const apiBase = `http://${env.API_HOST === "0.0.0.0" ? "127.0.0.1" : env.API_HOST}:${env.API_PORT}`;
+    console.log("[embedded-runner] resolving Revenant CLI...");
     const cli = await resolveRevenantCli();
     console.log(
-      `[embedded-runner] enabled — jobs will be claimed automatically` +
-        (cli ? ` (CLI: ${cli})` : " (CLI not found → metadata fallback; GitHub release fetch failed)")
+      `[embedded-runner] enabled — mode=stub jobs will be claimed automatically` +
+        (cli ? ` (CLI: ${cli})` : " (CLI unavailable; configure REVENANT_CLI_PATH or private release access)")
     );
     startRunnerPoll({
       apiBase,
@@ -30,11 +53,13 @@ try {
     });
   } else {
     console.log(
-      "[embedded-runner] off — start runner:stub / runner:agent, or set EMBEDDED_RUNNER=true"
+      "[embedded-runner] off — no jobs will be claimed by this API process; " +
+        "start a runner or set EMBEDDED_RUNNER=true"
     );
   }
 
   if (env.EMBEDDED_SCHEDULER) {
+    console.log("[embedded-scheduler] initializing schedule polling...");
     const db = createDb(env.DATABASE_URL);
     const jobsService = createJobsService(db, env.MASTER_KEY);
     startSchedulePoll({
@@ -52,6 +77,6 @@ try {
     );
   }
 } catch (err) {
-  app.log.error(err);
+  console.error("[api] startup failed:", err);
   process.exit(1);
 }

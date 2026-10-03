@@ -31,6 +31,8 @@ import { decryptSecret } from "../lib/crypto.js";
 import { isMissingRelationError, migrationRequiredMessage } from "../lib/pg-errors.js";
 import type { JobsService } from "./jobs.service.js";
 
+const AWS_REQUEST_TIMEOUT_MS = 15_000;
+
 function toPointResource(
   row: typeof recoveryPoints.$inferSelect,
   databaseName: string
@@ -150,7 +152,8 @@ async function findSnapshotAtVerificationTime(
       new DescribeDBSnapshotsCommand({
         DBInstanceIdentifier: sourceIdentifier,
         ...(marker ? { Marker: marker } : {}),
-      })
+      }),
+      { abortSignal: AbortSignal.timeout(AWS_REQUEST_TIMEOUT_MS) }
     );
     snapshots.push(...(response.DBSnapshots ?? []));
     marker = response.Marker;
@@ -158,7 +161,7 @@ async function findSnapshotAtVerificationTime(
   return selectSnapshotAtVerificationTime(snapshots, verificationStartedAt);
 }
 
-async function listAvailableSnapshots(client: RDSClient, sourceIdentifier: string) {
+async function listSnapshots(client: RDSClient, sourceIdentifier: string) {
   const snapshots = new Map<string, SnapshotCandidate>();
   for (const snapshotType of ["manual", "automated"] as const) {
     let marker: string | undefined;
@@ -168,16 +171,30 @@ async function listAvailableSnapshots(client: RDSClient, sourceIdentifier: strin
           DBInstanceIdentifier: sourceIdentifier,
           SnapshotType: snapshotType,
           ...(marker ? { Marker: marker } : {}),
-        })
+        }),
+        { abortSignal: AbortSignal.timeout(AWS_REQUEST_TIMEOUT_MS) }
       );
       for (const snapshot of response.DBSnapshots ?? []) {
-        if (snapshot.Status !== "available" || !snapshot.DBSnapshotIdentifier) continue;
+        if (!snapshot.DBSnapshotIdentifier) continue;
         snapshots.set(snapshot.DBSnapshotIdentifier, snapshot);
       }
       marker = response.Marker;
     } while (marker);
   }
   return [...snapshots.values()];
+}
+
+export function findMissingRecoveryPointIds(
+  points: Array<{ id: string; snapshotIdentifier: string }>,
+  awsSnapshotIdentifiers: Set<string>
+): string[] {
+  return points
+    .filter(
+      (point) =>
+        !point.snapshotIdentifier.startsWith("latest-verified-") &&
+        !awsSnapshotIdentifiers.has(point.snapshotIdentifier)
+    )
+    .map((point) => point.id);
 }
 
 export type RecoverFromPointInput = {
@@ -198,7 +215,8 @@ type SourceRecoveryInstance = {
 export function resolveRecoverySettings(
   input: Pick<RecoverFromPointInput, "dbSubnetGroupName" | "vpcSecurityGroupIds" | "instanceClass">,
   sourceInstance: SourceRecoveryInstance,
-  configuredInstanceClass?: string | null
+  configuredInstanceClass?: string | null,
+  allowDefaultNetwork = false
 ) {
   const dbSubnetGroupName =
     input.dbSubnetGroupName?.trim() || sourceInstance.DBSubnetGroup?.DBSubnetGroupName;
@@ -207,10 +225,14 @@ export function resolveRecoverySettings(
     : (sourceInstance.VpcSecurityGroups ?? [])
         .map((group) => group.VpcSecurityGroupId)
         .filter((id): id is string => Boolean(id));
-  if (!dbSubnetGroupName || vpcSecurityGroupIds.length === 0) {
+  const hasPartialNetworkSettings = Boolean(dbSubnetGroupName) !== (vpcSecurityGroupIds.length > 0);
+  if (
+    hasPartialNetworkSettings ||
+    (!allowDefaultNetwork && (!dbSubnetGroupName || vpcSecurityGroupIds.length === 0))
+  ) {
     throw createAppError(
       409,
-      "AWS did not return a subnet group and VPC security groups for the source instance.",
+      "Provide both a DB subnet group and at least one VPC security group, or use the source instance network settings.",
       "SOURCE_NETWORK_SETTINGS_UNAVAILABLE"
     );
   }
@@ -262,6 +284,13 @@ function toInstanceResource(
     createdAt: row.createdAt.toISOString(),
     deletedAt: row.deletedAt?.toISOString() ?? null,
   };
+}
+
+function isRdsInstanceNotFound(error: unknown): boolean {
+  return [
+    "DBInstanceNotFound",
+    "DBInstanceNotFoundFault",
+  ].includes(awsErrorName(error));
 }
 
 function awsErrorName(error: unknown): string {
@@ -323,7 +352,7 @@ export function createRecoveryPointsService(
   }
 
   function createRdsClient(region: string, credentials: Awaited<ReturnType<typeof loadAwsCredentials>>) {
-    return new RDSClient({ region, credentials });
+    return new RDSClient({ region, credentials, maxAttempts: 1 });
   }
 
   async function discoverAvailableRecoveryPoints(
@@ -342,16 +371,22 @@ export function createRecoveryPointsService(
       !database.rdsSourceIdentifier
     ) return;
 
-    let credentials: Awaited<ReturnType<typeof loadAwsCredentials>>;
-    try {
-      credentials = await loadAwsCredentials(organizationId, databaseId);
-    } catch {
-      return;
-    }
+    const credentials = await loadAwsCredentials(organizationId, databaseId);
     const client = createRdsClient(database.region, credentials);
+    const startedAt = Date.now();
+    console.log(
+      `[recovery] discovering AWS snapshots database=${databaseId} ` +
+        `region=${database.region} source=${database.rdsSourceIdentifier}`
+    );
     try {
-      const snapshots = await listAvailableSnapshots(client, database.rdsSourceIdentifier);
-      for (const snapshot of snapshots) {
+      const snapshots = await listSnapshots(client, database.rdsSourceIdentifier);
+      const awsSnapshotIdentifiers = new Set(
+        snapshots.map((snapshot) => snapshot.DBSnapshotIdentifier).filter(
+          (identifier): identifier is string => Boolean(identifier)
+        )
+      );
+      const availableSnapshots = snapshots.filter((snapshot) => snapshot.Status === "available");
+      for (const snapshot of availableSnapshots) {
         if (!snapshot.DBSnapshotIdentifier) continue;
         await db
           .insert(recoveryPoints)
@@ -377,8 +412,44 @@ export function createRecoveryPointsService(
             ],
           });
       }
+      const trackedPoints = await db
+        .select({
+          id: recoveryPoints.id,
+          snapshotIdentifier: recoveryPoints.snapshotIdentifier,
+        })
+        .from(recoveryPoints)
+        .where(
+          and(
+            eq(recoveryPoints.organizationId, organizationId),
+            eq(recoveryPoints.databaseId, databaseId),
+            eq(recoveryPoints.status, "active")
+          )
+        );
+      const missingPointIds = findMissingRecoveryPointIds(
+        trackedPoints,
+        awsSnapshotIdentifiers
+      );
+      if (missingPointIds.length > 0) {
+        await db
+          .update(recoveryPoints)
+          .set({ status: "deleted", updatedAt: new Date() })
+          .where(inArray(recoveryPoints.id, missingPointIds));
+      }
+      console.log(
+        `[recovery] snapshot discovery complete database=${databaseId} ` +
+          `available=${availableSnapshots.length} staleRemoved=${missingPointIds.length} ` +
+          `duration=${Date.now() - startedAt}ms`
+      );
     } catch (error) {
-      console.warn("[recovery] AWS snapshot discovery failed:", error);
+      console.error(
+        `[recovery] AWS snapshot discovery/reconciliation failed database=${databaseId} ` +
+          `after ${Date.now() - startedAt}ms: ${awsErrorMessage(error)}`
+      );
+      throw createAppError(
+        502,
+        `Could not reconcile recovery points with AWS for this database: ${awsErrorMessage(error)}`,
+        "AWS_SNAPSHOT_DISCOVERY_FAILED"
+      );
     } finally {
       client.destroy();
     }
@@ -484,7 +555,7 @@ export function createRecoveryPointsService(
         try {
           const response = await client.send(new DescribeDBSnapshotsCommand({
             DBSnapshotIdentifier: point.snapshotArn ?? point.snapshotIdentifier,
-          }));
+          }), { abortSignal: AbortSignal.timeout(AWS_REQUEST_TIMEOUT_MS) });
           snapshot = response.DBSnapshots?.[0];
         } catch (error) {
           if (["DBSnapshotNotFound", "DBSnapshotNotFoundFault"].includes(awsErrorName(error))) {
@@ -513,7 +584,7 @@ export function createRecoveryPointsService(
         }
         await client.send(new DeleteDBSnapshotCommand({
           DBSnapshotIdentifier: snapshot.DBSnapshotIdentifier ?? point.snapshotIdentifier,
-        }));
+        }), { abortSignal: AbortSignal.timeout(AWS_REQUEST_TIMEOUT_MS) });
         await db.update(recoveryPoints)
           .set({ status: "deleted", updatedAt: new Date() })
           .where(eq(recoveryPoints.id, point.id));
@@ -710,6 +781,7 @@ export function createRecoveryPointsService(
       const job = await jobsService.create(organizationId, userId, {
         databaseId: point.databaseId,
         drillKind: "verify",
+        recoveryPointId: point.id,
       });
 
       return { recoveryPoint: point, job: { id: job.id } };
@@ -733,6 +805,11 @@ export function createRecoveryPointsService(
       let point = await this.getById(organizationId, recoveryPointId);
       const database = await loadDatabase(organizationId, point.databaseId);
       const targetIdentifier = validateRecoveryTarget(input, database.rdsSourceIdentifier);
+      const recoveryStartedAt = Date.now();
+      console.log(
+        `[recovery] starting recoveryPoint=${point.id} database=${point.databaseId} ` +
+          `region=${database.region} target=${targetIdentifier}`
+      );
 
       const credentials = await loadAwsCredentials(organizationId, point.databaseId);
       const client = createRdsClient(database.region!, credentials);
@@ -861,7 +938,7 @@ export function createRecoveryPointsService(
         try {
           const response = await client.send(new DescribeDBSnapshotsCommand({
             DBSnapshotIdentifier: point.snapshotArn ?? point.snapshotIdentifier,
-          }));
+          }), { abortSignal: AbortSignal.timeout(AWS_REQUEST_TIMEOUT_MS) });
           snapshot = response.DBSnapshots?.[0];
         } catch (error) {
           client.destroy();
@@ -876,6 +953,7 @@ export function createRecoveryPointsService(
         client.destroy();
         throw createAppError(409, `Snapshot is not ready to restore (AWS status: ${snapshot.Status ?? "unknown"})`, "SNAPSHOT_NOT_READY");
       }
+      console.log(`[recovery] selected snapshot is available recoveryPoint=${point.id}`);
       if (resolvingLegacyPoint && !input.resolveOnly) {
         client.destroy();
         throw createAppError(
@@ -903,29 +981,39 @@ export function createRecoveryPointsService(
         );
       }
       let sourceInstance;
+      let sourceMissing = false;
       try {
         const sourceResponse = await client.send(
-          new DescribeDBInstancesCommand({ DBInstanceIdentifier: sourceIdentifier })
+          new DescribeDBInstancesCommand({ DBInstanceIdentifier: sourceIdentifier }),
+          { abortSignal: AbortSignal.timeout(AWS_REQUEST_TIMEOUT_MS) }
         );
         sourceInstance = sourceResponse.DBInstances?.[0];
       } catch (error) {
-        client.destroy();
-        throw createAppError(
-          502,
-          `Could not read network settings from the source RDS instance: ${awsErrorMessage(error)}`,
-          "AWS_SOURCE_INSTANCE_LOOKUP_FAILED"
-        );
+        if (isRdsInstanceNotFound(error)) {
+          sourceMissing = true;
+        } else {
+          client.destroy();
+          throw createAppError(
+            502,
+            `Could not read network settings from the source RDS instance: ${awsErrorMessage(error)}`,
+            "AWS_SOURCE_INSTANCE_LOOKUP_FAILED"
+          );
+        }
       }
-      if (!sourceInstance) {
-        client.destroy();
-        throw createAppError(404, "The source RDS instance was not found in AWS", "SOURCE_INSTANCE_NOT_FOUND");
+      if (!sourceInstance) sourceMissing = true;
+      if (sourceMissing) {
+        console.warn(
+          `[recovery] source RDS instance=${sourceIdentifier} was not found; ` +
+            "the restore will use AWS default networking unless both network settings are supplied"
+        );
       }
       let recoverySettings;
       try {
         recoverySettings = resolveRecoverySettings(
           input,
-          sourceInstance,
-          database.recoverySandboxInstanceClass
+          sourceInstance ?? {},
+          database.recoverySandboxInstanceClass,
+          sourceMissing
         );
       } catch (error) {
         client.destroy();
@@ -935,7 +1023,7 @@ export function createRecoveryPointsService(
       try {
         const existing = await client.send(new DescribeDBInstancesCommand({
           DBInstanceIdentifier: targetIdentifier,
-        }));
+        }), { abortSignal: AbortSignal.timeout(AWS_REQUEST_TIMEOUT_MS) });
         if (existing.DBInstances?.length) {
           throw createAppError(409, "An RDS instance with this target name already exists. Choose a new name; Revenant never overwrites instances.", "TARGET_ALREADY_EXISTS");
         }
@@ -965,6 +1053,7 @@ export function createRecoveryPointsService(
           targetIdentifier,
           dbSubnetGroupName,
           vpcSecurityGroupIds,
+          usedDefaultNetwork: sourceMissing && !dbSubnetGroupName,
         },
       }).returning({ id: recoveryRuns.id });
       const [instance] = await db.insert(recoveryInstances).values({
@@ -983,8 +1072,8 @@ export function createRecoveryPointsService(
           DBInstanceIdentifier: targetIdentifier,
           DBSnapshotIdentifier: snapshot.DBSnapshotArn ?? point.snapshotArn ?? point.snapshotIdentifier,
           DBInstanceClass: instanceClass,
-          DBSubnetGroupName: dbSubnetGroupName,
-          VpcSecurityGroupIds: vpcSecurityGroupIds,
+          ...(dbSubnetGroupName ? { DBSubnetGroupName: dbSubnetGroupName } : {}),
+          ...(vpcSecurityGroupIds.length > 0 ? { VpcSecurityGroupIds: vpcSecurityGroupIds } : {}),
           PubliclyAccessible: false,
           MultiAZ: false,
           Tags: [
@@ -993,7 +1082,7 @@ export function createRecoveryPointsService(
             { Key: "revenant:recovery-point-id", Value: point.id },
             { Key: "revenant:recovery-run-id", Value: run.id },
           ],
-        }));
+        }), { abortSignal: AbortSignal.timeout(AWS_REQUEST_TIMEOUT_MS) });
       } catch (error) {
         client.destroy();
         await db.update(recoveryInstances).set({ status: "failed" }).where(eq(recoveryInstances.id, instance.id));
@@ -1004,6 +1093,10 @@ export function createRecoveryPointsService(
         }).where(eq(recoveryRuns.id, run.id));
         throw createAppError(502, `AWS could not start the restore: ${awsErrorMessage(error)}`, "AWS_RESTORE_FAILED");
       }
+      console.log(
+        `[recovery] AWS accepted restore recoveryPoint=${point.id} target=${targetIdentifier} ` +
+          `duration=${Date.now() - recoveryStartedAt}ms`
+      );
 
       try {
         const created = restored.DBInstance;
@@ -1014,9 +1107,16 @@ export function createRecoveryPointsService(
           instanceClass: created?.DBInstanceClass ?? instanceClass,
         }).where(eq(recoveryInstances.id, instance.id));
       } catch {
-        // The AWS restore was accepted; polling will reconcile any missed fields.
+        console.error(
+          `[recovery] AWS accepted restore target=${targetIdentifier}, ` +
+            "but its initial status could not be saved; instance polling will reconcile it"
+        );
       }
       client.destroy();
+      console.log(
+        `[recovery] recovery request recorded recoveryPoint=${point.id} ` +
+          `instance=${instance.id} duration=${Date.now() - recoveryStartedAt}ms`
+      );
 
       return {
         resolvedOnly: false,
@@ -1052,7 +1152,11 @@ export function createRecoveryPointsService(
           database.region!,
           await loadAwsCredentials(organizationId, point.databaseId)
         );
-      } catch {
+      } catch (error) {
+        console.warn(
+          `[recovery] could not load AWS credentials for restore status database=${point.databaseId}; ` +
+            `returning last saved state: ${awsErrorMessage(error)}`
+        );
         return records.map((record) => toInstanceResource(record.instance));
       }
 
@@ -1060,10 +1164,14 @@ export function createRecoveryPointsService(
       for (const record of records) {
         let instance = record.instance;
         if (instance.status !== "available" && instance.status !== "failed" && instance.status !== "deleted") {
+          console.log(
+            `[recovery] polling restored instance=${instance.awsDbInstanceIdentifier} ` +
+              `lastStatus=${instance.status}`
+          );
           try {
             const response = await client.send(new DescribeDBInstancesCommand({
               DBInstanceIdentifier: instance.awsDbInstanceIdentifier,
-            }));
+            }), { abortSignal: AbortSignal.timeout(AWS_REQUEST_TIMEOUT_MS) });
             const awsInstance = response.DBInstances?.[0];
             if (awsInstance) {
               const awsStatus = awsInstance.DBInstanceStatus ?? "creating";
@@ -1076,6 +1184,12 @@ export function createRecoveryPointsService(
                 instanceClass: awsInstance.DBInstanceClass ?? instance.instanceClass,
               }).where(eq(recoveryInstances.id, instance.id)).returning();
               instance = updated;
+              if (awsStatus !== record.instance.status) {
+                console.log(
+                  `[recovery] restored instance=${instance.awsDbInstanceIdentifier} ` +
+                    `status=${awsStatus}`
+                );
+              }
               if (isAvailable || isFailed) {
                 await db.update(recoveryRuns).set({
                   status: isAvailable ? "pass" : "fail",
@@ -1086,7 +1200,10 @@ export function createRecoveryPointsService(
             }
           } catch (error) {
             if (awsErrorName(error) !== "DBInstanceNotFound") {
-              // Return the last durable state; transient AWS read errors should not hide it.
+              console.warn(
+                `[recovery] restore status check failed instance=${instance.awsDbInstanceIdentifier}; ` +
+                  `returning last saved state=${instance.status}: ${awsErrorMessage(error)}`
+              );
             }
           }
         }

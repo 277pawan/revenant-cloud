@@ -60,6 +60,11 @@ export async function jobsRoutes(
   app.get("/runner/whoami", { preHandler: runnerAuth }, runnersHandlers.whoami);
   app.post("/runner/claim", { preHandler: runnerAuth }, handlers.claim);
   app.post(
+    "/runner/jobs/:id/progress",
+    { preHandler: runnerAuth },
+    handlers.progress
+  );
+  app.post(
     "/runner/jobs/:id/complete",
     { preHandler: runnerAuth },
     handlers.complete

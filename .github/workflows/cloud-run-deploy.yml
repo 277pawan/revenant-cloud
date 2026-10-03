@@ -55,6 +55,8 @@ jobs:
             --cpu=2
             --timeout=3600
             --concurrency=20
+          secrets: |-
+            REVENANT_CLI_GITHUB_TOKEN=REVENANT_CLI_GITHUB_TOKEN:latest
 
       - name: Smoke test /health
         run: curl -fsS "${{ steps.deploy.outputs.url }}/health"

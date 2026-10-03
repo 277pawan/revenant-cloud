@@ -53,6 +53,7 @@ export function createSchedulesHandlers(
           resourceId: schedule.id,
           metadata: { databaseId: schedule.databaseId, name: schedule.name },
         });
+        request.auditEventRecorded = true;
         return reply.status(201).send({ schedule });
       } catch (err) {
         return sendHandlerError(err, request, reply, "Failed to create schedule");
@@ -87,6 +88,7 @@ export function createSchedulesHandlers(
           resourceType: "schedule",
           resourceId: schedule.id,
         });
+        request.auditEventRecorded = true;
         return { schedule };
       } catch (err) {
         return sendHandlerError(err, request, reply, "Failed to update schedule");
@@ -113,6 +115,7 @@ export function createSchedulesHandlers(
           resourceType: "schedule",
           resourceId: params.data.id,
         });
+        request.auditEventRecorded = true;
         return reply.status(204).send();
       } catch (err) {
         return sendHandlerError(err, request, reply, "Failed to delete schedule");

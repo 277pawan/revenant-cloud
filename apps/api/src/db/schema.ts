@@ -118,6 +118,13 @@ export const databases = pgTable("databases", {
   recoverySandboxInstanceClass: varchar("recovery_sandbox_instance_class", {
     length: 50,
   }),
+  recoveryDrillsEnabled: varchar("recovery_drills_enabled", { length: 10 })
+    .notNull()
+    .default("false"),
+  recoveryMaxLifetimeMinutes: integer("recovery_max_lifetime_minutes"),
+  recoveryCleanupCustomerSnapshots: varchar("recovery_cleanup_customer_snapshots", { length: 10 })
+    .notNull()
+    .default("false"),
   description: text("description"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
