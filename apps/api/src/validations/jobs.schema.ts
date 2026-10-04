@@ -51,6 +51,12 @@ export const jobProgressSchema = z.object({
     "reaping_sandboxes",
   ]),
   message: z.string().trim().min(1).max(255),
+  checks: z.array(z.object({
+    checkName: z.string().min(1).max(255),
+    checkType: z.string().min(1).max(100),
+    status: z.enum(["pass", "fail", "skip"]),
+    message: z.string().max(500).nullable(),
+  })).max(100).optional(),
 });
 
 export type ListJobsQueryInput = z.infer<typeof listJobsQuerySchema>;

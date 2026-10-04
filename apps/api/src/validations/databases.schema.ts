@@ -100,7 +100,7 @@ export const createDatabaseSchema = z
     recoveryCleanupCustomerSnapshots: z.boolean().optional(),
     awsAccessKeyId: z.string().max(128).optional(),
     awsSecretAccessKey: z.string().max(128).optional(),
-    awsSessionToken: z.string().max(256).optional(),
+    awsSessionToken: z.string().max(2048).optional(),
     description: z.string().max(2000).optional(),
   })
   .superRefine((data, ctx) => {
@@ -135,7 +135,7 @@ export const updateDatabaseSchema = z
     recoveryCleanupCustomerSnapshots: z.boolean().optional(),
     awsAccessKeyId: z.string().max(128).optional(),
     awsSecretAccessKey: z.string().max(128).optional(),
-    awsSessionToken: z.string().max(256).optional(),
+    awsSessionToken: z.string().max(2048).optional(),
     description: z.string().max(2000).nullable().optional(),
   })
   .superRefine((data, ctx) => {

@@ -5,6 +5,7 @@ import type {
   JobResultResource,
   Paginated,
   RecoveryContractDefinition,
+  RunnerProgressCheck,
 } from "@revenant/shared";
 import type { Database } from "../db/index.js";
 import {
@@ -65,6 +66,9 @@ function toJob(
             stage: runnerProgress.stage,
             message: runnerProgress.message,
             updatedAt: runnerProgress.updatedAt,
+            ...(Array.isArray(runnerProgress.checks)
+              ? { checks: runnerProgress.checks.filter(isRunnerProgressCheck) }
+              : {}),
           }
         : null,
     startedAt: row.startedAt?.toISOString() ?? null,
@@ -72,6 +76,16 @@ function toJob(
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
+}
+
+function isRunnerProgressCheck(value: unknown): value is RunnerProgressCheck {
+  return (
+    isRecord(value) &&
+    typeof value.checkName === "string" &&
+    typeof value.checkType === "string" &&
+    (value.status === "pass" || value.status === "fail" || value.status === "skip") &&
+    (value.message === null || typeof value.message === "string")
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -584,6 +598,12 @@ export function createJobsService(db: Database, masterKey: string) {
             stage: input.stage,
             message: input.message,
             updatedAt: new Date().toISOString(),
+            ...(input.checks !== undefined
+              ? { checks: input.checks }
+              : isRecord(metadata.runnerProgress) &&
+                  Array.isArray(metadata.runnerProgress.checks)
+                ? { checks: metadata.runnerProgress.checks }
+                : {}),
           },
         },
         updatedAt: new Date(),

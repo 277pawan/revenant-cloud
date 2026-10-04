@@ -64,7 +64,7 @@ async function claimAndComplete(opts: RunnerPollExecutionOptions): Promise<void>
       `runnerMode=${opts.executionMode}`
   );
 
-  const reportProgress: ReportRunnerProgress = async (stage, message) => {
+  const reportProgress: ReportRunnerProgress = async (stage, message, checks) => {
     try {
       const progressRes = await fetch(
         `${opts.apiBase}/api/v1/runner/jobs/${claimed.job.id}/progress`,
@@ -74,7 +74,7 @@ async function claimAndComplete(opts: RunnerPollExecutionOptions): Promise<void>
             Authorization: `Bearer ${opts.token}`,
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({ stage, message }),
+          body: JSON.stringify({ stage, message, ...(checks ? { checks } : {}) }),
           signal: AbortSignal.timeout(5_000),
         }
       );

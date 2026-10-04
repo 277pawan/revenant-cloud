@@ -6,6 +6,10 @@ import {
 import { and, eq } from "drizzle-orm";
 import type { Database } from "../db/index.js";
 import { databaseAwsCredentials, databases } from "../db/schema.js";
+import {
+  isAwsCredentialError,
+  normalizeAwsIamCredentials,
+} from "../lib/aws-credentials.js";
 import { decryptSecret } from "../lib/crypto.js";
 import { createAppError } from "../lib/errors.js";
 
@@ -92,19 +96,37 @@ export async function checkAwsSourceStatus(
     return result("not_configured", { message: "AWS credentials are not configured for this database." });
   }
 
-  let credentials: { accessKeyId?: string; secretAccessKey?: string; sessionToken?: string };
+  let savedCredentials: unknown;
   try {
-    credentials = JSON.parse(decryptSecret(credential, masterKey)) as typeof credentials;
+    savedCredentials = JSON.parse(decryptSecret(credential, masterKey));
   } catch (error) {
     console.error(
-      `[aws-source-check] database=${databaseId} could not decrypt AWS credentials:`,
+      `[aws-source-check] database=${databaseId} could not read saved AWS credentials:`,
       errorMessage(error)
     );
-    return result("unknown", { message: "Could not read the saved AWS credentials. Re-save them in database settings." });
+    return result("unknown", {
+      message: "Could not read the saved AWS credentials. Re-save them in database settings.",
+    });
   }
-  if (!credentials.accessKeyId || !credentials.secretAccessKey) {
-    console.warn(`[aws-source-check] database=${databaseId} saved AWS credentials are incomplete`);
-    return result("not_configured", { message: "Saved AWS credentials are incomplete. Re-enter them in database settings." });
+  if (!savedCredentials || typeof savedCredentials !== "object") {
+    return result("not_configured", {
+      message: "Saved AWS credentials are not a valid object. Re-enter the AWS credentials.",
+    });
+  }
+
+  let credentials: ReturnType<typeof normalizeAwsIamCredentials>;
+  try {
+    credentials = normalizeAwsIamCredentials(
+      savedCredentials as Partial<ReturnType<typeof normalizeAwsIamCredentials>>
+    );
+  } catch (error) {
+    console.warn(
+      `[aws-source-check] database=${databaseId} AWS credentials are incomplete:`,
+      errorMessage(error)
+    );
+    return result("not_configured", {
+      message: `Saved AWS credentials are incomplete or invalid: ${errorMessage(error)} Re-enter the AWS access key ID, secret, and session token if these are temporary credentials.`,
+    });
   }
 
   const sourceIdentifier = database.rdsSourceIdentifier;
@@ -206,12 +228,15 @@ export async function checkAwsSourceStatus(
     return status;
   } catch (error) {
     const message = errorMessage(error);
+    const credentialFailure = isAwsCredentialError(error);
     console.error(
       `[aws-source-check] database=${databaseId} AWS check failed ` +
         `after ${Date.now() - startedAt}ms: ${message}`
     );
     return result("unknown", {
-      message: `Could not verify this RDS instance in AWS: ${message}`,
+      message: credentialFailure
+        ? `AWS rejected the saved IAM credentials. Re-enter the access key ID and secret; include a valid session token for temporary credentials, or issue fresh credentials if they have expired. AWS: ${message}`
+        : `Could not verify this RDS instance in AWS: ${message}`,
     });
   } finally {
     client.destroy();

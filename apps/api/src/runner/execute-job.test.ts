@@ -3,14 +3,18 @@ import test from "node:test";
 import {
   buildAwsCliConfigYaml,
   buildCliEnv,
+  buildDatabaseUrl,
   buildGitHubReleaseHeaders,
   buildReleaseAssetName,
   cliUnavailableOutcome,
   mapCliCleanupResult,
+  mapCliCheckOutput,
   mapCliOutputProgress,
   mapCliReport,
   resolveConfiguredCliPath,
+  type ClaimedPayload,
 } from "./execute-job.js";
+import { jobProgressSchema } from "../validations/jobs.schema.js";
 import {
   assertAwsFullDrillSourceAvailable,
   type AwsSourceStatus,
@@ -64,6 +68,51 @@ test("CLI AWS lifecycle messages map to truthful job progress stages", () => {
   );
 });
 
+test("CLI check output is streamed as completed source-check progress", () => {
+  assert.deepEqual(
+    mapCliCheckOutput("job=job-1 step=snapshot", "✓ customers table exists"),
+    {
+      checkName: "customers table exists",
+      checkType: "source_validation",
+      status: "pass",
+      message: "customers table exists",
+    }
+  );
+  assert.equal(
+    mapCliCheckOutput("job=job-1 step=snapshot", "ordinary log output"),
+    null
+  );
+});
+
+test("runner progress accepts completed checks without changing stage payloads", () => {
+  assert.equal(
+    jobProgressSchema.safeParse({
+      stage: "selecting_snapshot",
+      message: "Snapshot is ready.",
+      checks: [{
+        checkName: "snapshot",
+        checkType: "snapshot",
+        status: "pass",
+        message: "Snapshot created",
+      }],
+    }).success,
+    true
+  );
+  assert.equal(
+    jobProgressSchema.safeParse({
+      stage: "selecting_snapshot",
+      message: "Snapshot is ready.",
+      checks: [{
+        checkName: "snapshot",
+        checkType: "snapshot",
+        status: "running",
+        message: "Snapshot creation",
+      }],
+    }).success,
+    false
+  );
+});
+
 test("snapshot report preserves every source validation check for the job details", () => {
   const checks = mapCliReport({
     status: "FAIL",
@@ -95,6 +144,12 @@ test("snapshot report preserves every source validation check for the job detail
       },
     ]
   );
+});
+
+test("verify failure without report details surfaces the actual CLI output", () => {
+  const cliOutput = "connect to sandbox: TLS handshake failed";
+  const results = mapCliReport({}, undefined, cliOutput);
+  assert.equal(results[0]?.message, cliOutput);
 });
 
 test("Cloud GitHub token is separate from selected database credentials", () => {
@@ -176,6 +231,79 @@ test("AWS drill uses the selected database's sandbox and AWS credentials", () =>
     if (previousToken === undefined) delete process.env.REVENANT_CLI_GITHUB_TOKEN;
     else process.env.REVENANT_CLI_GITHUB_TOKEN = previousToken;
   }
+});
+
+test("AWS MySQL drills build a MySQL source URL and sandbox config", () => {
+  const claimed: ClaimedPayload = {
+    job: { id: "job-mysql", databaseName: "Production Mysql" },
+    database: {
+      id: "db-mysql",
+      engine: "mysql",
+      host: "mysql.example",
+      port: 3306,
+      databaseName: "myapp",
+      username: "admin",
+      sslMode: "require",
+      recoveryMode: "aws-rds",
+    },
+    password: "mysql-secret",
+    recovery: {
+      engine: "aws-rds",
+      sourceIdentifier: "mysql-database-1",
+      region: "eu-west-2",
+      useFreetier: true,
+      sandboxInstanceClass: "db.t3.micro",
+      maxLifetimeMinutes: 60,
+      cleanupCustomerSnapshots: false,
+    },
+    awsCredentials: {
+      accessKeyId: "AKIAEXAMPLE",
+      secretAccessKey: "aws-secret",
+      sessionToken: "aws-session-token",
+    },
+    planYaml: "checks:\n  - type: connect",
+  };
+  const { env } = buildCliEnv(claimed, true);
+  assert.equal(
+    env.SOURCE_DATABASE_URL,
+    "mysql://admin:mysql-secret@mysql.example:3306/myapp?tls=skip-verify"
+  );
+  assert.equal(
+    env.DATABASE_URL,
+    "mysql://admin:mysql-secret@mysql.example:3306/myapp?tls=skip-verify"
+  );
+  assert.equal(
+    buildDatabaseUrl({
+      ...claimed,
+      database: { ...claimed.database, sslMode: "prefer" },
+    }),
+    "mysql://admin:mysql-secret@mysql.example:3306/myapp?tls=preferred"
+  );
+  assert.equal(
+    buildDatabaseUrl({
+      ...claimed,
+      database: { ...claimed.database, sslMode: "disable" },
+    }),
+    "mysql://admin:mysql-secret@mysql.example:3306/myapp"
+  );
+  assert.equal(env.AWS_SESSION_TOKEN, "aws-session-token");
+
+  const yaml = buildAwsCliConfigYaml(
+    claimed.planYaml,
+    claimed.job.databaseName,
+    claimed.recovery!,
+    claimed.database.id,
+    claimed.job.id,
+    claimed.database.engine,
+    claimed.database.sslMode
+  );
+  assert.match(yaml, /engine: mysql/);
+  assert.match(
+    yaml,
+    /connection: mysql:\/\/\$\{SANDBOX_USER\}:\$\{SANDBOX_PASSWORD\}@\$\{SANDBOX_ENDPOINT\}:3306\/\$\{SANDBOX_DBNAME\}\?tls=skip-verify/
+  );
+  assert.match(yaml, /source_connection: \$\{SOURCE_DATABASE_URL\}/);
+  assert.doesNotMatch(yaml, /postgres/);
 });
 
 test("private release authorization is attached only to GitHub API requests", () => {

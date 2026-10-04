@@ -28,6 +28,7 @@ import {
 } from "../db/schema.js";
 import { createAppError } from "../lib/errors.js";
 import { decryptSecret } from "../lib/crypto.js";
+import { normalizeAwsIamCredentials } from "../lib/aws-credentials.js";
 import { isMissingRelationError, migrationRequiredMessage } from "../lib/pg-errors.js";
 import type { JobsService } from "./jobs.service.js";
 
@@ -328,14 +329,15 @@ export function createRecoveryPointsService(
       secretAccessKey?: string;
       sessionToken?: string;
     };
-    if (!parsed.accessKeyId || !parsed.secretAccessKey) {
-      throw createAppError(400, "AWS credentials are incomplete", "AWS_CREDENTIALS_REQUIRED");
+    try {
+      return normalizeAwsIamCredentials(parsed);
+    } catch (error) {
+      throw createAppError(
+        400,
+        error instanceof Error ? error.message : "AWS credentials are incomplete",
+        "AWS_CREDENTIALS_REQUIRED"
+      );
     }
-    return {
-      accessKeyId: parsed.accessKeyId,
-      secretAccessKey: parsed.secretAccessKey,
-      ...(parsed.sessionToken ? { sessionToken: parsed.sessionToken } : {}),
-    };
   }
 
   async function loadDatabase(organizationId: string, databaseId: string) {

@@ -9,6 +9,7 @@ import {
 } from "../db/schema.js";
 import { decryptSecret, encryptSecret } from "../lib/crypto.js";
 import { createAppError } from "../lib/errors.js";
+import { normalizeAwsIamCredentials } from "../lib/aws-credentials.js";
 import { assertRecoveryLifetimeWithinLimit } from "../lib/recovery-policy.js";
 import { checkAwsSourceStatus } from "./aws-source-status.service.js";
 import { assertPlanLimit, assertRecoveryModeAllowed } from "../lib/plan-limits.js";
@@ -144,10 +145,22 @@ export function createDatabasesService(db: Database, masterKey: string) {
     secretAccessKey: string,
     sessionToken?: string
   ): Promise<void> {
+    let normalizedCredentials: ReturnType<typeof normalizeAwsIamCredentials>;
+    try {
+      normalizedCredentials = normalizeAwsIamCredentials({
+        accessKeyId,
+        secretAccessKey,
+        sessionToken,
+      });
+    } catch (error) {
+      throw createAppError(
+        400,
+        error instanceof Error ? error.message : "Invalid AWS credentials",
+        "AWS_CREDENTIALS_INVALID"
+      );
+    }
     const payload = JSON.stringify({
-      accessKeyId,
-      secretAccessKey,
-      ...(sessionToken ? { sessionToken } : {}),
+      ...normalizedCredentials,
     });
     const encrypted = encryptSecret(payload, masterKey);
     const existing = await db

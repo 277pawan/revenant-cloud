@@ -428,6 +428,13 @@ export type JobCheckStatus = "pass" | "fail" | "skip";
 
 export type RunnerKind = "agent" | "ci";
 
+export interface RunnerProgressCheck {
+  checkName: string;
+  checkType: string;
+  status: JobCheckStatus;
+  message: string | null;
+}
+
 export interface JobResource {
   id: string;
   databaseId: string;
@@ -442,6 +449,7 @@ export interface JobResource {
     stage: string;
     message: string;
     updatedAt: string;
+    checks?: RunnerProgressCheck[];
   } | null;
   startedAt: string | null;
   finishedAt: string | null;

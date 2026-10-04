@@ -87,7 +87,13 @@ export type RunnerProgressStage =
 
 export type ReportRunnerProgress = (
   stage: RunnerProgressStage,
-  message: string
+  message: string,
+  checks?: Array<{
+    checkName: string;
+    checkType: string;
+    status: "pass" | "fail" | "skip";
+    message: string | null;
+  }>
 ) => Promise<void>;
 
 type CliReport = {
@@ -395,7 +401,7 @@ export function buildDatabaseUrl(claimed: ClaimedPayload): string | null {
   const dbName = encodeURIComponent(databaseName);
   const p = port ?? (engine === "mysql" ? 3306 : 5432);
   if (engine === "mysql") {
-    const tls = sslMode === "disable" ? "" : "?tls=true";
+    const tls = mysqlTlsQuery(sslMode);
     return `mysql://${user}:${pass}@${host}:${p}/${dbName}${tls}`;
   }
   const mode =
@@ -406,6 +412,11 @@ export function buildDatabaseUrl(claimed: ClaimedPayload): string | null {
       : sslMode;
   const ssl = mode === "disable" ? "" : `?sslmode=${encodeURIComponent(mode)}`;
   return `postgresql://${user}:${pass}@${host}:${p}/${dbName}${ssl}`;
+}
+
+function mysqlTlsQuery(sslMode?: string | null): string {
+  if (sslMode === "disable") return "";
+  return `?tls=${sslMode === "prefer" ? "preferred" : "skip-verify"}`;
 }
 
 function extractChecksBlock(planYaml: string | null): string {
@@ -449,11 +460,12 @@ export function buildAwsCliConfigYaml(
   recovery: AwsRecoveryJobConfig,
   databaseId: string,
   jobId: string,
-  engine: "postgres" | "mysql" = "postgres"
+  engine: "postgres" | "mysql" = "postgres",
+  sslMode?: string | null
 ): string {
   const sandboxPort = engine === "mysql" ? 3306 : 5432;
   const sandboxConnection = engine === "mysql"
-    ? `mysql://\${SANDBOX_USER}:\${SANDBOX_PASSWORD}@\${SANDBOX_ENDPOINT}:${sandboxPort}/\${SANDBOX_DBNAME}?tls=true`
+    ? `mysql://\${SANDBOX_USER}:\${SANDBOX_PASSWORD}@\${SANDBOX_ENDPOINT}:${sandboxPort}/\${SANDBOX_DBNAME}${mysqlTlsQuery(sslMode)}`
     : `postgres://\${SANDBOX_USER}:\${SANDBOX_PASSWORD}@\${SANDBOX_ENDPOINT}:${sandboxPort}/\${SANDBOX_DBNAME}?sslmode=require`;
   const lines = [
     `plan: ${JSON.stringify(planName)}`,
@@ -464,6 +476,7 @@ export function buildAwsCliConfigYaml(
     "recovery:",
     "  engine: aws-rds",
     `  source_identifier: ${JSON.stringify(recovery.sourceIdentifier)}`,
+    "  source_connection: ${SOURCE_DATABASE_URL}",
     `  region: ${JSON.stringify(recovery.region)}`,
     `  database_id: ${JSON.stringify(databaseId)}`,
     `  run_id: ${JSON.stringify(jobId)}`,
@@ -539,6 +552,15 @@ function runCommand(
     let stdoutLine = "";
     let stderrLine = "";
     let progressQueue = Promise.resolve();
+    const progressChecks: Array<{
+      checkName: string;
+      checkType: string;
+      status: "pass" | "fail";
+      message: string;
+    }> = [];
+    let lastProgressStage: RunnerProgressStage = opts.label.includes("step=snapshot")
+      ? "checking_source"
+      : "running_checks";
     const heartbeat = opts.heartbeat;
     const heartbeatTimer = opts.onProgress && heartbeat
       ? setInterval(() => {
@@ -555,9 +577,18 @@ function runCommand(
       : undefined;
     const reportLineProgress = (line: string) => {
       const progress = mapCliOutputProgress(opts.label, line);
-      if (!progress || !opts.onProgress) return;
+      if (progress) lastProgressStage = progress.stage;
+      const outputCheck = mapCliCheckOutput(opts.label, line);
+      if ((!progress && !outputCheck) || !opts.onProgress) return;
+      if (outputCheck) progressChecks.push(outputCheck);
+      const stage = progress?.stage ?? lastProgressStage;
+      const message = (
+        progress?.message ?? `Completed check: ${outputCheck?.checkName}`
+      ).slice(0, 255);
       progressQueue = progressQueue
-        .then(() => opts.onProgress?.(progress.stage, progress.message))
+        .then(() =>
+          opts.onProgress?.(stage, message, progressChecks.slice(-100))
+        )
         .then(() => undefined)
         .catch((error: unknown) => {
           console.error(
@@ -636,6 +667,28 @@ function runCommand(
   });
 }
 
+export function mapCliCheckOutput(
+  label: string,
+  line: string
+): {
+  checkName: string;
+  checkType: string;
+  status: "pass" | "fail";
+  message: string;
+} | null {
+  const match = line.trim().match(/^([✓✗])\s+(.+)$/);
+  if (!match) return null;
+  const [, marker, rawMessage] = match;
+  const message = rawMessage.slice(0, 255);
+  if (!label.includes("step=snapshot")) return null;
+  return {
+    checkName: message,
+    checkType: "source_validation",
+    status: marker === "✓" ? "pass" : "fail",
+    message,
+  };
+}
+
 export function mapCliOutputProgress(
   label: string,
   line: string
@@ -711,7 +764,8 @@ export function mapCliOutputProgress(
 
 export function mapCliReport(
   report: CliReport,
-  checkType?: string
+  checkType?: string,
+  fallbackMessage?: string
 ): CheckResult[] {
   const checks = report.checks ?? [];
   if (checks.length === 0) {
@@ -720,7 +774,7 @@ export function mapCliReport(
         checkName: "verify",
         checkType: "verify",
         status: report.status?.toUpperCase() === "PASS" ? "pass" : "fail",
-        message: "CLI finished without per-check details",
+        message: fallbackMessage?.slice(0, 500) || "CLI finished without per-check details",
         durationMs: 0,
       },
     ];
@@ -744,7 +798,7 @@ export function buildCliEnv(
 ): { env: NodeJS.ProcessEnv; error?: string } {
   const baseEnv = cliProcessEnvironment();
   if (awsMode) {
-    const { username, databaseName } = claimed.database;
+    const { host, username, databaseName } = claimed.database;
     const recovery = claimed.recovery;
     const aws = claimed.awsCredentials;
 
@@ -760,11 +814,18 @@ export function buildCliEnv(
         error: "AWS credentials missing — add access keys on the database",
       };
     }
-    if (!username || !claimed.password || !databaseName) {
+    if (!host || !username || !claimed.password || !databaseName) {
       return {
         env: baseEnv,
         error:
-          "RDS master username, password, and database name required for sandbox connection",
+          "Source RDS host, master username, password, and database name are required",
+      };
+    }
+    const databaseUrl = buildDatabaseUrl(claimed);
+    if (!databaseUrl) {
+      return {
+        env: baseEnv,
+        error: "Could not build a source database URL for the selected database engine",
       };
     }
 
@@ -778,9 +839,8 @@ export function buildCliEnv(
         SANDBOX_USER: username,
         SANDBOX_PASSWORD: claimed.password,
         SANDBOX_DBNAME: databaseName,
-        ...(buildDatabaseUrl(claimed)
-          ? { DATABASE_URL: buildDatabaseUrl(claimed)! }
-          : {}),
+        DATABASE_URL: databaseUrl,
+        SOURCE_DATABASE_URL: databaseUrl,
       },
     };
   }
@@ -844,7 +904,8 @@ async function runWithCli(
         claimed.recovery,
         claimed.database.id,
         claimed.job.id,
-        claimed.database.engine
+        claimed.database.engine,
+        claimed.database.sslMode
       )
     : buildDirectCliConfigYaml(claimed.planYaml, planName, claimed.database.engine);
 
@@ -936,6 +997,18 @@ async function runWithCli(
         durationMs: Date.now() - snapStarted,
       };
       results.push(snapshotResult);
+      await reportProgress(
+        snapOk ? "selecting_snapshot" : "checking_source",
+        snapOk
+          ? "Live source checks are complete; the recovery snapshot is ready. Preparing restore verification."
+          : "Live source validation or recovery snapshot creation failed.",
+        results.slice(-100).map((result) => ({
+          checkName: result.checkName,
+          checkType: result.checkType,
+          status: result.status === "error" ? "fail" : result.status,
+          message: result.message,
+        }))
+      );
       if (!snapOk) {
         console.error(
           `[runner] job=${claimed.job.id} snapshot failed after ${Date.now() - snapStarted}ms`
@@ -999,7 +1072,11 @@ async function runWithCli(
       report = {};
     }
 
-    const verifyResults = mapCliReport(report);
+    const verifyResults = mapCliReport(
+      report,
+      undefined,
+      code !== 0 ? stderr || stdout : undefined
+    );
     const connectionCheck = verifyResults.find((result) => result.checkType === "connect");
     console.log(
       `[runner] job=${claimed.job.id} verification report loaded ` +
@@ -1044,6 +1121,18 @@ async function runWithCli(
     if (cleanup) {
       results.push(mapCliCleanupResult(cleanup));
     }
+    await reportProgress(
+      cleanup ? "cleaning_sandbox" : "running_checks",
+      cleanup
+        ? "Restore validation is complete; checking temporary sandbox cleanup status."
+        : "Restore validation checks are complete.",
+      results.slice(-100).map((result) => ({
+        checkName: result.checkName,
+        checkType: result.checkType,
+        status: result.status === "error" ? "fail" : result.status,
+        message: result.message,
+      }))
+    );
     const failed = verifyFailed || results.some((r) => r.status === "fail");
     console.log(
       `[runner] job=${claimed.job.id} CLI execution ${failed ? "failed" : "passed"} ` +
