@@ -5,6 +5,7 @@ import {
   DescribeDBInstancesCommand,
   RDSClient,
   AddTagsToResourceCommand,
+  type DescribeDBSnapshotsCommandOutput,
 } from "@aws-sdk/client-rds";
 import { and, eq, inArray } from "drizzle-orm";
 import type { Database } from "../db/index.js";
@@ -576,7 +577,7 @@ export async function reconcileTemporaryRecoveryResources(
         ) {
           let customerSnapshotMarker: string | undefined;
           do {
-            const page = await client.send(
+            const page: DescribeDBSnapshotsCommandOutput = await client.send(
               new DescribeDBSnapshotsCommand({
                 DBInstanceIdentifier: database.rdsSourceIdentifier,
                 SnapshotType: "manual",
