@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  findMissingLegacyRecoveryPointIds,
   findMissingRecoveryPointIds,
   resolveRecoverySettings,
   selectSnapshotAtVerificationTime,
+  shouldFailMissingRestoreInstance,
   validateRecoveryTarget,
   type RecoverFromPointInput,
 } from "./recovery-points.service.js";
@@ -27,6 +29,61 @@ test("reconciles only tracked snapshots absent from the successful AWS listing",
       new Set(["snapshot-still-in-aws"])
     ),
     ["stale"]
+  );
+});
+
+test("removes legacy recovery points when no matching AWS snapshot existed at verification time", () => {
+  const verifiedAt = new Date("2026-10-04T13:51:10Z");
+  const snapshots = [
+    {
+      DBSnapshotIdentifier: "snapshot-before-verification",
+      SnapshotCreateTime: new Date("2026-10-04T13:50:00Z"),
+      Status: "available",
+    },
+    {
+      DBSnapshotIdentifier: "snapshot-after-verification",
+      SnapshotCreateTime: new Date("2026-10-04T13:52:00Z"),
+      Status: "available",
+    },
+  ];
+
+  assert.deepEqual(
+    findMissingLegacyRecoveryPointIds(
+      [
+        {
+          id: "matched-legacy",
+          snapshotIdentifier: "latest-verified-2026-10-04",
+          lastVerifiedAt: verifiedAt,
+          verificationStartedAt: null,
+        },
+        {
+          id: "unmatched-legacy",
+          snapshotIdentifier: "latest-verified-2026-10-04",
+          lastVerifiedAt: new Date("2026-10-04T13:49:00Z"),
+          verificationStartedAt: null,
+        },
+        {
+          id: "unknown-verification-time",
+          snapshotIdentifier: "latest-verified-2026-10-04",
+          lastVerifiedAt: null,
+          verificationStartedAt: null,
+        },
+      ],
+      snapshots,
+    ),
+    ["unmatched-legacy", "unknown-verification-time"],
+  );
+});
+
+test("treats a missing restored DB instance as failed after the AWS propagation grace period", () => {
+  const createdAt = new Date("2026-09-27T04:00:00Z");
+  assert.equal(
+    shouldFailMissingRestoreInstance(createdAt, createdAt.getTime() + 9 * 60_000),
+    false
+  );
+  assert.equal(
+    shouldFailMissingRestoreInstance(createdAt, createdAt.getTime() + 10 * 60_000),
+    true
   );
 });
 
