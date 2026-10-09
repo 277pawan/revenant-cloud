@@ -57,6 +57,7 @@ jobs:
             --concurrency=20
           secrets: |-
             REVENANT_CLI_GITHUB_TOKEN=REVENANT_CLI_GITHUB_TOKEN:latest
+            RECOVERY_RECONCILE_TOKEN=RECOVERY_RECONCILE_TOKEN:latest
 
       - name: Smoke test /health
         run: curl -fsS "${{ steps.deploy.outputs.url }}/health"

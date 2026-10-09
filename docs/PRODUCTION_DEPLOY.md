@@ -79,8 +79,6 @@ COOKIE_SECURE=true
 # ─── Managed drills (Starter + Pro AWS) ───────────────────
 EMBEDDED_RUNNER=true
 EMBEDDED_SCHEDULER=true
-AWS_RECOVERY_MAX_LIFETIME_MINUTES=60
-RECOVERY_RECONCILE_TOKEN=STORE_A_RANDOM_SECRET_IN_SECRET_MANAGER
 ```
 
 Apply migration `0024_recovery_ttl_policy` through the normal database migration step before deploying the API version that uses these columns. It preserves enabled recovery drills for existing AWS databases; newly registered AWS databases start disabled until explicitly enabled in **Recovery operations**.
@@ -89,25 +87,44 @@ Revenant-created temporary restore instances and full-drill snapshots are tagged
 
 An additional, separately confirmed option allows deletion of non-Revenant **manual snapshots for that database's configured source** after the selected retention duration. Existing manual snapshots older than that duration can be deleted at the next reconciliation. Do not enable it unless deleting those customer-created snapshots is intended. It never deletes the source database or AWS automated snapshots.
 
-A process crash or timeout can bypass normal completion reporting, so configure Google Cloud Scheduler (or an equivalent scheduler) to send an authenticated `POST` to:
+Cloud Run is deployed with zero minimum instances, so its embedded schedule poller is not reliable for cleanup: the API may scale to zero between requests. To avoid paying for Cloud Scheduler, use the included GitHub Actions workflow, which calls the API every five minutes.
 
 ```text
 https://YOUR_API/api/v1/internal/recovery/reconcile
 Authorization: Bearer <RECOVERY_RECONCILE_TOKEN>
 ```
 
-Run it every five minutes and keep the token in Secret Manager. The endpoint scans Revenant-owned resources by exact ownership/purpose/database/run/expiry tags, and scans customer manual snapshots only for databases where the separate opt-in is enabled. It waits for AWS deletion confirmation and returns `207` with per-database errors if any cleanup could not be completed. No scheduler or cloud resource is created by the application migration or deployment.
+Generate a strong random token (for example, `openssl rand -hex 32`), store it in Secret Manager as `RECOVERY_RECONCILE_TOKEN`, and configure the API to read that secret. The deploy workflow maps the secret to the API environment; create the secret before deploying.
 
-`AWS_RECOVERY_MAX_LIFETIME_MINUTES` caps any configured retention (default cap 60 minutes; valid range 10–1440); it does not turn automatic deletion on. If a run is still active and sending heartbeats when its expiry passes, reconciliation extends the expiry in ten-minute increments so it does not interrupt a legitimate restore or validation. A finished or stale Revenant-created resource is eligible after its expiry plus the ten-minute grace period.
+For the free GitHub Actions option, add the same token in the repository under **Settings → Secrets and variables → Actions → New repository secret**, named `RECOVERY_RECONCILE_TOKEN`. Deploy the API, then run **Actions → Reconcile expired recovery resources → Run workflow** once to verify it. It will then run every five minutes. GitHub Actions is free for public repositories and includes a monthly allowance for private repositories; use beyond the private-repository allowance may incur charges, and scheduled runs can be delayed briefly.
+
+The endpoint scans Revenant-owned resources by exact ownership/purpose/database/run/expiry tags, and scans customer manual snapshots only for databases where the separate opt-in is enabled. It waits for AWS deletion confirmation and reports per-database errors. The AWS credentials saved for the database must also allow `rds:DescribeDBSnapshots` and `rds:DeleteDBSnapshot`; AWS permission errors are reported by the workflow.
+
+Cloud Scheduler is an optional alternative. For it, create a job that calls the authenticated endpoint every five minutes:
+
+```bash
+gcloud scheduler jobs create http revenant-recovery-reconcile \
+  --location=asia-south1 \
+  --schedule="*/5 * * * *" \
+  --time-zone="Etc/UTC" \
+  --uri="https://YOUR_API/api/v1/internal/recovery/reconcile" \
+  --http-method=POST \
+  --update-headers="Authorization=Bearer YOUR_TOKEN" \
+  --attempt-deadline=30m
+```
+
+Each database has its own retention duration in Recovery Operations; there is no platform-wide retention cap. The duration is stored as a whole number of minutes (minimum 10, maximum 2,147,483,647 due to the database integer type). Retention must still be enabled per database. Longer retention keeps AWS snapshots and instances around longer and may increase AWS storage charges. If a run is still active and sending heartbeats when its expiry passes, reconciliation extends the expiry in ten-minute increments so it does not interrupt a legitimate restore or validation. A finished or stale Revenant-created resource is eligible after its expiry plus the ten-minute grace period.
 
 Create a fine-grained GitHub token restricted to `277pawan/revenant-cli` with **Contents: Read-only** and store it in Google Cloud Secret Manager under `REVENANT_CLI_GITHUB_TOKEN`. Do not put this token in a customer GitHub repository or commit it. Grant Secret Manager Secret Accessor to both the Cloud Run runtime service account and the GitHub deploy identity. The deploy workflow maps the Secret Manager version `latest` to the `REVENANT_CLI_GITHUB_TOKEN` environment variable.
+
+Also grant Secret Manager access to `RECOVERY_RECONCILE_TOKEN` for the Cloud Run runtime service account and GitHub deploy identity. Create this secret before the first deployment that includes the recovery reconciliation secret mapping.
 
 For a manual Cloud Run update, bind the existing secret with:
 
 ```bash
 gcloud run services update revenant-api \
   --region asia-south1 \
-  --update-secrets=REVENANT_CLI_GITHUB_TOKEN=REVENANT_CLI_GITHUB_TOKEN:latest
+  --update-secrets=REVENANT_CLI_GITHUB_TOKEN=REVENANT_CLI_GITHUB_TOKEN:latest,RECOVERY_RECONCILE_TOKEN=RECOVERY_RECONCILE_TOKEN:latest
 ```
 
 If the private release cannot be downloaded, production drills fail instead of returning a metadata-only pass.

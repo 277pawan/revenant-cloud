@@ -1,0 +1,42 @@
+name: Reconcile expired recovery resources
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reconcile expired AWS recovery resources
+        env:
+          RECOVERY_RECONCILE_TOKEN: ${{ secrets.RECOVERY_RECONCILE_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$RECOVERY_RECONCILE_TOKEN" ]]; then
+            echo "::error::Add RECOVERY_RECONCILE_TOKEN in GitHub repository Actions secrets."
+            exit 1
+          fi
+
+          response="$(curl --silent --show-error --fail-with-body \
+            --write-out $'\n%{http_code}' \
+            --request POST \
+            --header "Authorization: Bearer ${RECOVERY_RECONCILE_TOKEN}" \
+            --header "Accept: application/json" \
+            https://api.revenant.dev/api/v1/internal/recovery/reconcile)"
+          status="${response##*$'\n'}"
+          body="${response%$'\n'*}"
+          printf '%s\n' "$body" | jq .
+
+          if [[ ! "$status" =~ ^2 ]]; then
+            echo "::error::Recovery reconciliation returned HTTP ${status}."
+            exit 1
+          fi
+          if jq -e '.errors | length > 0' <<< "$body" >/dev/null; then
+            echo "::error::Recovery reconciliation reported AWS cleanup errors."
+            exit 1
+          fi

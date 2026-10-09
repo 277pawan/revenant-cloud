@@ -1,26 +1,19 @@
 import { createAppError } from "./errors.js";
 
-const DEFAULT_MAX_LIFETIME_MINUTES = 60;
-
-export function configuredRecoveryMaxLifetimeMinutes(): number {
-  const raw = process.env.AWS_RECOVERY_MAX_LIFETIME_MINUTES?.trim();
-  const value = raw ? Number(raw) : DEFAULT_MAX_LIFETIME_MINUTES;
-  if (!Number.isInteger(value) || value < 10 || value > 1440) {
-    throw new Error(
-      "AWS_RECOVERY_MAX_LIFETIME_MINUTES must be an integer between 10 and 1440"
-    );
-  }
-  return value;
-}
+const MIN_RECOVERY_LIFETIME_MINUTES = 10;
+const MAX_RECOVERY_LIFETIME_MINUTES = 2_147_483_647;
 
 export function assertRecoveryLifetimeWithinLimit(minutes: number | null | undefined): void {
   if (minutes == null) return;
-  const maximum = configuredRecoveryMaxLifetimeMinutes();
-  if (minutes > maximum) {
+  if (
+    !Number.isInteger(minutes) ||
+    minutes < MIN_RECOVERY_LIFETIME_MINUTES ||
+    minutes > MAX_RECOVERY_LIFETIME_MINUTES
+  ) {
     throw createAppError(
       400,
-      `Recovery resource lifetime cannot exceed the configured maximum of ${maximum} minutes`,
-      "RECOVERY_LIFETIME_EXCEEDS_LIMIT"
+      `Recovery resource lifetime must be a whole number between ${MIN_RECOVERY_LIFETIME_MINUTES} and ${MAX_RECOVERY_LIFETIME_MINUTES} minutes`,
+      "INVALID_RECOVERY_LIFETIME"
     );
   }
 }
