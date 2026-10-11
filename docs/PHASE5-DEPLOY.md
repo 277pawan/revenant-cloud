@@ -1,12 +1,13 @@
 # Phase 5 — Deploy & Docker Hub agent
 
-**Status:** 5.1 in progress (agent image includes Go CLI)  
+**Status:** Agent image downloads the latest published CLI release at runtime.
 **Prerequisite:** Agent tested locally against cloud API (Phase 2.5)
 
 ## Goal
 
-**Important first:** reproducible **agent image with `revenant` CLI inside** → local Docker smoke → Docker Hub.  
-**Later:** deploy control plane (API + web) to staging.
+The agent image contains no CLI binary. At startup the runner downloads the latest
+published `revenant-cli` GitHub release; private repositories require a
+read-only `REVENANT_CLI_GITHUB_TOKEN` supplied at runtime.
 
 ---
 
@@ -20,13 +21,9 @@ newgrp docker
 docker run --rm hello-world
 ```
 
-You already have **Go 1.22** for local CLI builds. The image **rebuilds the CLI inside Docker** so customers do not need Go.
-
 ---
 
-## 5.1 Agent image (this week)
-
-Named build context `cli-src` = sibling `revenant-cli` (Go module).
+## 5.1 Agent image
 
 ```bash
 cd revenant-agent
@@ -38,31 +35,27 @@ Equivalent:
 
 ```bash
 docker build \
-  --build-context cli-src=../revenant-cli \
   --build-arg REVENANT_API_URL=http://127.0.0.1:8080 \
   -t revenant-agent:local \
   .
 ```
 
-### Test CLI in the image
-
-```bash
-docker run --rm --entrypoint revenant revenant-agent:local --help
-```
-
 ### Test agent against local API
 
 API must be listening on the host (`:8080`). Token from **Settings → Services**.
+Set `REVENANT_CLI_GITHUB_TOKEN` in the environment for access to the private
+release repository.
 
 ```bash
 docker run --rm \
   --add-host=host.docker.internal:host-gateway \
   -e REVENANT_API_URL=http://host.docker.internal:8080 \
   -e REVENANT_RUNNER_TOKEN=rvn_YOUR_TOKEN \
+  -e REVENANT_CLI_GITHUB_TOKEN \
   revenant-agent:local
 ```
 
-Expect: `whoami` OK, `cli=/usr/local/bin/revenant`, poll started. Then run a workflow in the UI.
+Expect: `whoami` OK, latest release resolved, poll started. Then run a workflow in the UI.
 
 Compose:
 

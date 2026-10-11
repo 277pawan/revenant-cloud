@@ -131,8 +131,8 @@ export const databases = pgTable("databases", {
 });
 
 /**
- * Encrypted secrets for a database (1:1).
- * ciphertext + iv + auth_tag = AES-256-GCM of the password (never plaintext).
+ * Encrypted credentials for a database (1:1): SQL passwords or MongoDB URIs.
+ * ciphertext + iv + auth_tag = AES-256-GCM; plaintext is never stored.
  */
 export const databaseCredentials = pgTable(
   "database_credentials",

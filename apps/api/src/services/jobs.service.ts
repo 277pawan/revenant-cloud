@@ -92,6 +92,31 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+export function claimDatabaseSecret(
+  engine: string,
+  secret: string | null
+): { password: string | null; connectionString?: string } {
+  return engine === "mongodb"
+    ? {
+        password: null,
+        ...(secret !== null ? { connectionString: secret } : {}),
+      }
+    : { password: secret };
+}
+
+function assertSupportedRecoveryMode(database: {
+  engine: string;
+  recoveryMode: string;
+}): void {
+  if (database.engine === "mongodb" && database.recoveryMode !== "direct") {
+    throw createAppError(
+      400,
+      "MongoDB direct validation does not support AWS/RDS restore mode",
+      "INVALID_RECOVERY_MODE"
+    );
+  }
+}
+
 function toResult(row: typeof jobResults.$inferSelect): JobResultResource {
   return {
     id: row.id,
@@ -201,6 +226,7 @@ export function createJobsService(db: Database, masterKey: string) {
     if (!dbRows[0]) {
       throw createAppError(404, "Database not found", "NOT_FOUND");
     }
+    assertSupportedRecoveryMode(dbRows[0]);
 
     if (
       dbRows[0].recoveryMode === "aws-rds" &&
@@ -268,6 +294,7 @@ export function createJobsService(db: Database, masterKey: string) {
     if (!dbRows[0]) {
       throw createAppError(404, "Database not found", "NOT_FOUND");
     }
+    assertSupportedRecoveryMode(dbRows[0]);
 
     if (
       dbRows[0].recoveryMode === "aws-rds" &&
@@ -405,6 +432,7 @@ export function createJobsService(db: Database, masterKey: string) {
     }
 
     const { job, database } = pending[0];
+    assertSupportedRecoveryMode(database);
     const executionMode = auth.type === "stub" ? "stub" : auth.kind;
     const claimedByRunnerId = auth.type === "org" ? auth.runnerId : null;
 
@@ -438,9 +466,9 @@ export function createJobsService(db: Database, masterKey: string) {
       .where(eq(databaseCredentials.databaseId, database.id))
       .limit(1);
 
-    let password: string | null = null;
+    let storedSecret: string | null = null;
     if (cred[0]) {
-      password = decryptSecret(
+      storedSecret = decryptSecret(
         {
           ciphertext: cred[0].ciphertext,
           iv: cred[0].iv,
@@ -449,6 +477,7 @@ export function createJobsService(db: Database, masterKey: string) {
         masterKey
       );
     }
+    const databaseSecret = claimDatabaseSecret(database.engine, storedSecret);
 
     let awsCredentials: {
       accessKeyId: string;
@@ -539,7 +568,12 @@ export function createJobsService(db: Database, masterKey: string) {
       database: {
         id: database.id,
         name: database.name,
-        engine: database.engine === "mysql" ? "mysql" : "postgres",
+        engine:
+          database.engine === "mongodb"
+            ? "mongodb"
+            : database.engine === "mysql"
+              ? "mysql"
+              : "postgres",
         host: database.host,
         port: database.port,
         databaseName: database.databaseName,
@@ -548,7 +582,7 @@ export function createJobsService(db: Database, masterKey: string) {
         region: database.region,
         recoveryMode,
       },
-      password,
+      ...databaseSecret,
       recovery,
       awsCredentials,
       planYaml: plan[0]?.yamlText ?? null,

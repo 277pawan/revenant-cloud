@@ -115,9 +115,19 @@ gcloud scheduler jobs create http revenant-recovery-reconcile \
 
 Each database has its own retention duration in Recovery Operations; there is no platform-wide retention cap. The duration is stored as a whole number of minutes (minimum 10, maximum 2,147,483,647 due to the database integer type). Retention must still be enabled per database. Longer retention keeps AWS snapshots and instances around longer and may increase AWS storage charges. If a run is still active and sending heartbeats when its expiry passes, reconciliation extends the expiry in ten-minute increments so it does not interrupt a legitimate restore or validation. A finished or stale Revenant-created resource is eligible after its expiry plus the ten-minute grace period.
 
-Create a fine-grained GitHub token restricted to `277pawan/revenant-cli` with **Contents: Read-only** and store it in Google Cloud Secret Manager under `REVENANT_CLI_GITHUB_TOKEN`. Do not put this token in a customer GitHub repository or commit it. Grant Secret Manager Secret Accessor to both the Cloud Run runtime service account and the GitHub deploy identity. The deploy workflow maps the Secret Manager version `latest` to the `REVENANT_CLI_GITHUB_TOKEN` environment variable.
+Create the Google Cloud Secret Manager secret `REVENANT_CLI_GITHUB_TOKEN` once, then create a fine-grained GitHub token restricted to `277pawan/revenant-cli` with **Contents: Read-only** and add it as the GitHub Actions repository secret `revenant_cli_token`. For example:
 
-Also grant Secret Manager access to `RECOVERY_RECONCILE_TOKEN` for the Cloud Run runtime service account and GitHub deploy identity. Create this secret before the first deployment that includes the recovery reconciliation secret mapping.
+```bash
+gcloud secrets create REVENANT_CLI_GITHUB_TOKEN \
+  --project=revenant-cloud \
+  --replication-policy=automatic
+```
+
+The deploy workflow publishes the GitHub Actions secret as a new version of that Secret Manager secret, then maps its latest version to the Cloud Run environment. Grant the GitHub deploy identity Secret Manager Secret Version Adder for that secret; grant the Cloud Run runtime service account Secret Manager Secret Accessor. Do not commit or print the token.
+
+For local API development, GitHub Actions secrets are not available to your shell or `.env` automatically. Add the token value to the untracked local `.env` as `REVENANT_CLI_GITHUB_TOKEN=...` and restart the API. The API logs whether release authentication is configured and which published CLI release it selected. Never paste the token into chat or commit `.env`.
+
+Also grant Secret Manager Secret Accessor to the Cloud Run runtime service account for `RECOVERY_RECONCILE_TOKEN`. Create this secret before the first deployment that includes the recovery reconciliation secret mapping.
 
 For a manual Cloud Run update, bind the existing secret with:
 

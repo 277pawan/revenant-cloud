@@ -77,6 +77,33 @@ export function createDatabasesHandlers(
       }
     },
 
+    mongoConnectivityStatus: async (
+      request: FastifyRequest,
+      reply: FastifyReply
+    ) => {
+      const params = databaseIdParamSchema.safeParse(request.params);
+      if (!params.success) {
+        return reply
+          .status(400)
+          .send({ error: "Invalid database id", code: "VALIDATION_ERROR" });
+      }
+
+      try {
+        const status = await databasesService.checkMongoConnectivity(
+          request.user.organizationId,
+          params.data.id
+        );
+        return { status };
+      } catch (err) {
+        return sendHandlerError(
+          err,
+          request,
+          reply,
+          "Failed to check MongoDB connectivity"
+        );
+      }
+    },
+
     create: async (request: FastifyRequest, reply: FastifyReply) => {
       const parsed = createDatabaseSchema.safeParse(request.body);
       if (!parsed.success) {

@@ -59,9 +59,8 @@ cd revenant-cloud/packages/shared && npm run build
 
 # 4. Save validation plan (checks from freetier yaml)
 
-# 5. Issue agent token (Services page) and run agent with CLI on PATH:
+# 5. Issue agent token (Services page) and let the agent download the latest CLI release:
 export REVENANT_RUNNER_TOKEN=rvn_xxx
-export REVENANT_CLI_PATH=/path/to/revenant-cli/revenant
 cd revenant-agent && npm run dev
 
 # 6. Trigger job from Workflows → Run

@@ -10,7 +10,8 @@ export type EncryptedSecret = {
 };
 
 /**
- * Encrypt a customer DB password with MASTER_KEY (AES-256-GCM).
+ * Encrypt a customer database secret with MASTER_KEY (AES-256-GCM).
+ * Secrets include SQL passwords and MongoDB connection URIs.
  * Returns base64 ciphertext + iv + authTag for database_credentials.
  */
 export function encryptSecret(plain: string, masterKeyBase64: string): EncryptedSecret {

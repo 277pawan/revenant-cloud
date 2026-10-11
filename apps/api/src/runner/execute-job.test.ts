@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildAwsCliConfigYaml,
+  buildDirectCliConfigYaml,
   buildCliEnv,
   buildDatabaseUrl,
   buildGitHubReleaseHeaders,
@@ -11,7 +12,8 @@ import {
   mapCliCheckOutput,
   mapCliOutputProgress,
   mapCliReport,
-  resolveConfiguredCliPath,
+  sanitizeCliOutput,
+  executeClaimedJob,
   type ClaimedPayload,
 } from "./execute-job.js";
 import { jobProgressSchema } from "../validations/jobs.schema.js";
@@ -19,6 +21,89 @@ import {
   assertAwsFullDrillSourceAvailable,
   type AwsSourceStatus,
 } from "../services/aws-source-status.service.js";
+
+const mongoUri =
+  "mongodb+srv://validator:secret@cluster0.example.mongodb.net/app?retryWrites=true";
+const mongoPayload: ClaimedPayload = {
+  job: { id: "job-mongo", databaseName: "Atlas production" },
+  database: {
+    id: "db-mongo",
+    engine: "mongodb",
+    host: null,
+    port: null,
+    databaseName: "app",
+    username: null,
+    sslMode: null,
+    recoveryMode: "direct",
+  },
+  password: null,
+  connectionString: mongoUri,
+  recovery: null,
+  awsCredentials: null,
+  planYaml: "checks:\n  - type: collections\n    name: collections exist",
+  fullDrill: false,
+};
+
+test("MongoDB direct jobs create CLI-compatible YAML and pass URI only through MONGODB_URI", () => {
+  const yaml = buildDirectCliConfigYaml(
+    mongoPayload.planYaml,
+    mongoPayload.job.databaseName,
+    "mongodb",
+    mongoPayload.database.databaseName
+  );
+  assert.match(yaml, /engine: mongodb/);
+  assert.match(yaml, /connection: \$\{MONGODB_URI\}/);
+  assert.match(yaml, /name: "app"/);
+  assert.doesNotMatch(yaml, /validator:secret/);
+
+  const configured = buildCliEnv(mongoPayload, false);
+  assert.equal(configured.error, undefined);
+  assert.equal(configured.env.MONGODB_URI, mongoUri);
+  assert.equal(buildDatabaseUrl(mongoPayload), null);
+});
+
+test("MongoDB URI is redacted from CLI diagnostics", () => {
+  assert.doesNotMatch(
+    sanitizeCliOutput(`failed to connect to ${mongoUri}`, {
+      MONGODB_URI: mongoUri,
+    }),
+    /validator:secret/
+  );
+  assert.match(
+    sanitizeCliOutput(`failed to connect to ${mongoUri}`, {
+      MONGODB_URI: mongoUri,
+    }),
+    /REDACTED_MONGODB_URI/
+  );
+});
+
+test("MongoDB restore and missing-URI requests fail rather than simulate successful checks", async () => {
+  const unsupported = buildCliEnv(
+    {
+      ...mongoPayload,
+      database: { ...mongoPayload.database, recoveryMode: "aws-rds" },
+      recovery: {
+        engine: "aws-rds",
+        sourceIdentifier: "not-supported",
+        region: "us-east-1",
+        useFreetier: true,
+        sandboxInstanceClass: null,
+        maxLifetimeMinutes: null,
+        cleanupCustomerSnapshots: false,
+      },
+    },
+    true
+  );
+  assert.match(unsupported.error ?? "", /does not support AWS\/RDS/);
+
+  const failed = await executeClaimedJob(
+    { ...mongoPayload, connectionString: null },
+    "agent"
+  );
+  assert.equal(failed.status, "fail");
+  assert.equal(failed.results[0]?.status, "fail");
+  assert.match(failed.errorMessage ?? "", /MongoDB URI/);
+});
 
 test("missing AWS sources block full drills and direct users to retained recovery points", () => {
   const status: AwsSourceStatus = {
@@ -404,10 +489,4 @@ test("buildReleaseAssetName creates the release asset name used by GitHub Releas
   assert.ok(asset);
   assert.match(asset!, /^revenant_0\.1\.1_/);
   assert.ok(asset!.endsWith(".tar.gz") || asset!.endsWith(".zip"));
-});
-
-test("only an explicitly configured existing CLI path is accepted", async () => {
-  assert.equal(await resolveConfiguredCliPath(process.execPath), process.execPath);
-  assert.equal(await resolveConfiguredCliPath("/missing/revenant"), null);
-  assert.equal(await resolveConfiguredCliPath(""), null);
 });

@@ -1,7 +1,10 @@
 import { loadEnv } from "./config/env.js";
 import { buildApp } from "./app.js";
 import { startRunnerPoll } from "./runner/poll-loop.js";
-import { resolveRevenantCli } from "./runner/execute-job.js";
+import {
+  getCliResolutionDetails,
+  resolveRevenantCli,
+} from "./runner/execute-job.js";
 import { startSchedulePoll } from "./scheduler/poll-schedules.js";
 import { startWeeklyDigestPoll } from "./scheduler/poll-weekly-digest.js";
 import { createJobsService } from "./services/jobs.service.js";
@@ -12,7 +15,6 @@ console.log(
   `[api] configuration validated — host=${env.API_HOST} port=${env.API_PORT} ` +
     `environment=${env.NODE_ENV} embeddedRunner=${env.EMBEDDED_RUNNER} ` +
     `embeddedScheduler=${env.EMBEDDED_SCHEDULER} ` +
-    `cliPath=${process.env.REVENANT_CLI_PATH?.trim() ? "configured" : "not configured"} ` +
     `githubReleaseToken=${process.env.REVENANT_CLI_GITHUB_TOKEN?.trim() ? "configured" : "not configured"}`
 );
 console.log("[api] building application...");
@@ -42,7 +44,9 @@ try {
     const cli = await resolveRevenantCli();
     console.log(
       `[embedded-runner] enabled — mode=stub jobs will be claimed automatically` +
-        (cli ? ` (CLI: ${cli})` : " (CLI unavailable; configure REVENANT_CLI_PATH or private release access)")
+        (cli
+          ? ` (CLI: ${cli}; release=${getCliResolutionDetails().release})`
+          : " (CLI unavailable; configure GitHub release access)")
     );
     startRunnerPoll({
       apiBase,

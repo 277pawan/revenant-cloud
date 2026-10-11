@@ -13,6 +13,7 @@ export const databaseIdParamSchema = z.object({
 });
 
 export const generateValidationYamlSchema = z.object({
+  engine: z.enum(["sql", "mongodb"]).default("sql"),
   schemaText: z
     .string()
     .min(20, "Schema is too short")

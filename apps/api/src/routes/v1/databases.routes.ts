@@ -29,6 +29,12 @@ export async function databasesRoutes(
     handlers.awsSourceStatus
   );
 
+  app.get(
+    "/databases/:id/mongodb-status",
+    { preHandler: requirePermission("databases:read") },
+    handlers.mongoConnectivityStatus
+  );
+
   app.post(
     "/databases",
     { preHandler: requirePermission("databases:write") },

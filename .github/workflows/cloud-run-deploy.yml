@@ -3,6 +3,7 @@
 # One-time GitHub repo secret (Settings → Secrets → Actions):
 #   GCP_SA_KEY — JSON key for a service account with:
 #     roles/run.admin, roles/cloudbuild.builds.editor, roles/iam.serviceAccountUser
+#   revenant_cli_token — fine-grained read-only token for 277pawan/revenant-cli.
 #
 # Env vars (DATABASE_URL, JWT_SECRET, Razorpay, etc.) stay on the Cloud Run
 # service — this workflow only ships new code. Migrations are still manual:
@@ -38,6 +39,17 @@ jobs:
       - uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Publish CLI download token to Secret Manager
+        env:
+          REVENANT_CLI_GITHUB_TOKEN: ${{ secrets.revenant_cli_token }}
+        run: |
+          if [[ -z "$REVENANT_CLI_GITHUB_TOKEN" ]]; then
+            echo "::error::Set the GitHub Actions secret revenant_cli_token to a read-only token for 277pawan/revenant-cli."
+            exit 1
+          fi
+          printf '%s' "$REVENANT_CLI_GITHUB_TOKEN" \
+            | gcloud secrets versions add REVENANT_CLI_GITHUB_TOKEN --project=revenant-cloud --data-file=-
 
       - id: deploy
         uses: google-github-actions/deploy-cloudrun@v2

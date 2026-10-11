@@ -12,6 +12,10 @@ import { createAppError } from "../lib/errors.js";
 import { normalizeAwsIamCredentials } from "../lib/aws-credentials.js";
 import { assertRecoveryLifetimeWithinLimit } from "../lib/recovery-policy.js";
 import { checkAwsSourceStatus } from "./aws-source-status.service.js";
+import {
+  checkMongoConnectivity,
+  type MongoConnectivityStatus,
+} from "./mongodb-connectivity.service.js";
 import { assertPlanLimit, assertRecoveryModeAllowed } from "../lib/plan-limits.js";
 import type {
   CreateDatabaseInput,
@@ -22,6 +26,65 @@ import {
   paginationMeta,
   paginationOffset,
 } from "../validations/pagination.schema.js";
+
+export function databaseCredentialForCreate(
+  input: CreateDatabaseInput
+): string | null {
+  return input.engine === "mongodb"
+    ? input.connectionString ?? null
+    : input.password ?? null;
+}
+
+export function databaseCredentialForUpdate(
+  engine: string,
+  input: UpdateDatabaseInput
+): string | null {
+  if (engine === "mongodb") return input.connectionString ?? null;
+  return input.password && input.password !== "" ? input.password : null;
+}
+
+function assertMongoDirectOnly(input: {
+  host?: unknown;
+  port?: unknown;
+  username?: unknown;
+  password?: unknown;
+  sslMode?: unknown;
+  region?: unknown;
+  rdsSourceIdentifier?: unknown;
+  recoveryUseFreetier?: unknown;
+  recoverySandboxInstanceClass?: unknown;
+  recoveryDrillsEnabled?: unknown;
+  recoveryMaxLifetimeMinutes?: unknown;
+  recoveryCleanupCustomerSnapshots?: unknown;
+  awsAccessKeyId?: unknown;
+  awsSecretAccessKey?: unknown;
+  awsSessionToken?: unknown;
+}): void {
+  const unsupportedSettings = [
+    input.host,
+    input.port,
+    input.username,
+    input.password,
+    input.sslMode,
+    input.region,
+    input.rdsSourceIdentifier,
+    input.recoveryUseFreetier,
+    input.recoverySandboxInstanceClass,
+    input.recoveryDrillsEnabled,
+    input.recoveryMaxLifetimeMinutes,
+    input.recoveryCleanupCustomerSnapshots,
+    input.awsAccessKeyId,
+    input.awsSecretAccessKey,
+    input.awsSessionToken,
+  ];
+  if (unsupportedSettings.some((value) => value !== undefined)) {
+    throw createAppError(
+      400,
+      "MongoDB uses only a direct connection URI; host, region, and AWS/RDS settings are unsupported",
+      "INVALID_MONGODB_SETTINGS"
+    );
+  }
+}
 
 function parseRecoveryMode(value: string | null | undefined): RecoveryMode {
   return value === "aws-rds" ? "aws-rds" : "direct";
@@ -296,12 +359,46 @@ export function createDatabasesService(db: Database, masterKey: string) {
       return checkAwsSourceStatus(db, masterKey, organizationId, databaseId);
     },
 
+    async checkMongoConnectivity(
+      organizationId: string,
+      databaseId: string
+    ): Promise<MongoConnectivityStatus> {
+      return checkMongoConnectivity(db, masterKey, organizationId, databaseId);
+    },
+
     async create(
       organizationId: string,
       input: CreateDatabaseInput
     ): Promise<DatabaseResource> {
       await assertPlanLimit(db, organizationId, "databases");
-      const recoveryMode = input.recoveryMode ?? "aws-rds";
+      const engine = input.engine ?? "postgres";
+      const recoveryMode =
+        engine === "mongodb" ? "direct" : input.recoveryMode ?? "aws-rds";
+      if (engine === "mongodb" && recoveryMode !== "direct") {
+        throw createAppError(
+          400,
+          "MongoDB direct validation does not support AWS/RDS restore mode",
+          "INVALID_RECOVERY_MODE"
+        );
+      }
+      if (
+        engine === "mongodb" &&
+        (!input.connectionString || !input.databaseName?.trim())
+      ) {
+        throw createAppError(
+          400,
+          "MongoDB validation requires a connection string and database name",
+          "MONGODB_CONNECTION_REQUIRED"
+        );
+      }
+      if (engine === "mongodb" && input.password) {
+        throw createAppError(
+          400,
+          "Use connectionString instead of password for MongoDB",
+          "MONGODB_CONNECTION_REQUIRED"
+        );
+      }
+      if (engine === "mongodb") assertMongoDirectOnly(input);
       await assertRecoveryModeAllowed(db, organizationId, recoveryMode);
       assertRecoveryLifetimeWithinLimit(input.recoveryMaxLifetimeMinutes);
       if (
@@ -319,13 +416,13 @@ export function createDatabasesService(db: Database, masterKey: string) {
         .values({
           organizationId,
           name: input.name,
-          engine: input.engine ?? "postgres",
-          host: input.host,
-          port: input.port,
+          engine,
+          host: engine === "mongodb" ? null : input.host,
+          port: engine === "mongodb" ? null : input.port,
           databaseName: input.databaseName,
-          username: input.username,
-          sslMode: input.sslMode,
-          region: input.region,
+          username: engine === "mongodb" ? null : input.username,
+          sslMode: engine === "mongodb" ? null : input.sslMode,
+          region: engine === "mongodb" ? null : input.region,
           recoveryMode,
           rdsSourceIdentifier:
             recoveryMode === "aws-rds" ? input.rdsSourceIdentifier : null,
@@ -352,9 +449,8 @@ export function createDatabasesService(db: Database, masterKey: string) {
         })
         .returning();
 
-      if (input.password) {
-        await upsertCredential(organizationId, row.id, input.password);
-      }
+      const credential = databaseCredentialForCreate(input);
+      if (credential) await upsertCredential(organizationId, row.id, credential);
 
       if (
         recoveryMode === "aws-rds" &&
@@ -380,18 +476,84 @@ export function createDatabasesService(db: Database, masterKey: string) {
     ): Promise<DatabaseResource> {
       const currentDatabase = await getById(organizationId, id);
       assertRecoveryLifetimeWithinLimit(input.recoveryMaxLifetimeMinutes);
+      const engine = input.engine ?? currentDatabase.engine;
+      const recoveryMode =
+        engine === "mongodb"
+          ? "direct"
+          : input.recoveryMode ?? currentDatabase.recoveryMode;
+      if (engine === "mongodb" && recoveryMode !== "direct") {
+        throw createAppError(
+          400,
+          "MongoDB direct validation does not support AWS/RDS restore mode",
+          "INVALID_RECOVERY_MODE"
+        );
+      }
+      if (engine === "mongodb" && !input.connectionString &&
+          (currentDatabase.engine !== "mongodb" || !currentDatabase.hasCredentials)) {
+        throw createAppError(
+          400,
+          "Provide a MongoDB connection string when switching to MongoDB",
+          "MONGODB_CONNECTION_REQUIRED"
+        );
+      }
+      if (
+        engine === "mongodb" &&
+        !(input.databaseName ?? currentDatabase.databaseName)?.trim()
+      ) {
+        throw createAppError(
+          400,
+          "MongoDB validation requires a database name",
+          "MONGODB_CONNECTION_REQUIRED"
+        );
+      }
+      if (engine !== "mongodb" && currentDatabase.engine === "mongodb" && !input.password) {
+        throw createAppError(
+          400,
+          "Provide a database password when switching from MongoDB to SQL",
+          "DATABASE_CREDENTIAL_REQUIRED"
+        );
+      }
+      if (engine !== "mongodb" && input.connectionString) {
+        throw createAppError(
+          400,
+          "Connection string is only supported for MongoDB",
+          "INVALID_CONNECTION_STRING"
+        );
+      }
+      if (engine === "mongodb" && input.password !== undefined) {
+        throw createAppError(
+          400,
+          "Use connectionString instead of password for MongoDB",
+          "MONGODB_CONNECTION_REQUIRED"
+        );
+      }
+      if (engine === "mongodb") assertMongoDirectOnly(input);
 
       const patch: Partial<typeof databases.$inferInsert> = {
         updatedAt: new Date(),
       };
       if (input.name !== undefined) patch.name = input.name;
       if (input.engine !== undefined) patch.engine = input.engine;
-      if (input.host !== undefined) patch.host = input.host;
-      if (input.port !== undefined) patch.port = input.port;
+      if (engine === "mongodb") {
+        patch.host = null;
+        patch.port = null;
+        patch.username = null;
+        patch.sslMode = null;
+        patch.region = null;
+        patch.recoveryMode = "direct";
+        patch.rdsSourceIdentifier = null;
+        patch.recoveryUseFreetier = "false";
+        patch.recoverySandboxInstanceClass = null;
+        patch.recoveryDrillsEnabled = "false";
+        patch.recoveryMaxLifetimeMinutes = null;
+        patch.recoveryCleanupCustomerSnapshots = "false";
+      }
+      if (input.host !== undefined && engine !== "mongodb") patch.host = input.host;
+      if (input.port !== undefined && engine !== "mongodb") patch.port = input.port;
       if (input.databaseName !== undefined) patch.databaseName = input.databaseName;
-      if (input.username !== undefined) patch.username = input.username;
-      if (input.sslMode !== undefined) patch.sslMode = input.sslMode;
-      if (input.region !== undefined) patch.region = input.region;
+      if (input.username !== undefined && engine !== "mongodb") patch.username = input.username;
+      if (input.sslMode !== undefined && engine !== "mongodb") patch.sslMode = input.sslMode;
+      if (input.region !== undefined && engine !== "mongodb") patch.region = input.region;
       if (input.description !== undefined) patch.description = input.description;
 
       if (input.recoveryMode !== undefined) {
@@ -461,9 +623,14 @@ export function createDatabasesService(db: Database, masterKey: string) {
         .set(patch)
         .where(and(eq(databases.id, id), eq(databases.organizationId, organizationId)));
 
-      if (input.password !== undefined && input.password !== "") {
-        await upsertCredential(organizationId, id, input.password);
+      if (engine === "mongodb") {
+        await db
+          .delete(databaseAwsCredentials)
+          .where(eq(databaseAwsCredentials.databaseId, id));
       }
+
+      const credential = databaseCredentialForUpdate(engine, input);
+      if (credential) await upsertCredential(organizationId, id, credential);
 
       if (input.awsAccessKeyId && input.awsSecretAccessKey) {
         await upsertAwsCredential(
