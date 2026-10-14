@@ -46,6 +46,7 @@ export function extractYamlDocument(raw: string): string {
 export function validateRevenantYaml(text: string): {
   yamlText: string;
   checks: ComposerCheck[];
+  engine: string;
 } {
   let doc: unknown;
   try {
@@ -216,7 +217,7 @@ export function validateRevenantYaml(text: string): {
     checks.push({ type });
   });
 
-  return { yamlText: text.trim() + "\n", checks };
+  return { yamlText: text.trim() + "\n", checks, engine };
 }
 
 export function redactSchemaSecrets(schema: string): string {

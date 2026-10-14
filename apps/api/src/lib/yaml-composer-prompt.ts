@@ -1,7 +1,7 @@
 /** System prompt: one-shot revenant.yaml from schema. No chat memory. */
 export const YAML_COMPOSER_SYSTEM_PROMPT = `You write revenant.yaml for Revenant Cloud restore proof.
 
-Revenant does NOT backup data. After a restore (or against a live Postgres), it runs checks. Your YAML is that proof plan.
+Revenant does NOT backup data. After a restore, it runs checks. Your YAML is that proof plan.
 
 OUTPUT RULES:
 - Return ONLY valid YAML. No markdown fences. No commentary.
@@ -9,7 +9,7 @@ OUTPUT RULES:
 - Always:
     plan: <short-kebab-name>
     database:
-      engine: postgres
+      engine: <the exact selected database engine: postgres or mysql>
       connection: \${DATABASE_URL}
 - Do NOT include a recovery: block (the control plane injects AWS restore settings).
 - Do NOT put passwords, hosts, or real connection strings in the file.

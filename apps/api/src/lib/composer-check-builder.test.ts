@@ -128,6 +128,17 @@ describe("composeYamlFromSchema — control-plane drizzle + optional rules", () 
     );
   });
 
+  it("keeps the selected MySQL engine in generated YAML", () => {
+    const composed = composeYamlFromSchema(analysis!, {
+      planName: "mysql-proof",
+      engine: "mysql",
+      layers: ["schema"],
+    });
+    const validated = validateRevenantYaml(composed.yamlText);
+    assert.equal(validated.engine, "mysql");
+    assert.match(validated.yamlText, /engine: mysql/);
+  });
+
   it("honors created_at, updated_at, and account (users) without inventing tables", () => {
     const composed = composeYamlFromSchema(analysis!, {
       planName: "default",

@@ -46,6 +46,8 @@ Requires sibling repo: `../revenant-cli` (CLI is compiled inside the image).
 
 When `EMBEDDED_RUNNER=true`, Cloud Run downloads the private CLI release using `REVENANT_CLI_GITHUB_TOKEN`. This is one service-level distribution credential, not a customer database credential. Drill DB passwords and AWS credentials remain encrypted per database and are injected only into that database's job.
 
+The Cloud Run GitHub Actions deployment enables `EMBEDDED_RUNNER=true`, keeps one service instance warm, and allocates CPU outside HTTP requests so the embedded poll loop can claim and finish queued drills.
+
 ---
 
 ## Step 3 — Environment variables (backend vs frontend)

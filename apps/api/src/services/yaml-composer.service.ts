@@ -10,7 +10,7 @@ import {
 } from "../lib/revenant-yaml.js";
 
 export interface YamlComposerInput {
-  engine?: "sql" | "mongodb";
+  engine?: "sql" | "postgres" | "mysql" | "mongodb";
   schemaText: string;
   intent?: string;
   planName?: string;
@@ -109,12 +109,16 @@ export function createYamlComposerService(env: Env) {
       }
 
       const planName = input.planName?.trim() || "restore-proof";
-      const engine = input.engine ?? "sql";
-      const analysis = engine === "sql" ? analyzeSchema(schema) : null;
+      const engine =
+        input.engine === undefined || input.engine === "sql"
+          ? "postgres"
+          : input.engine;
+      const analysis = engine === "mongodb" ? null : analyzeSchema(schema);
 
       if (analysis && analysis.tables.length > 0) {
         const composed = composeYamlFromSchema(analysis, {
           planName,
+          engine: engine === "mysql" ? "mysql" : "postgres",
           layers: input.layers,
           intent: input.intent,
         });
@@ -146,7 +150,7 @@ export function createYamlComposerService(env: Env) {
             : "default restore-proof layers";
 
       const userContent = [
-        `Database engine: ${engine === "mongodb" ? "MongoDB" : "SQL (PostgreSQL or MySQL)"}`,
+        `Database engine: ${engine}`,
         `Plan name: ${planName}`,
         `Proof layers to include: ${layers}`,
         input.intent?.trim()
@@ -215,6 +219,11 @@ export function createYamlComposerService(env: Env) {
       try {
         const yamlText = extractYamlDocument(content);
         const validated = validateRevenantYaml(yamlText);
+        if (validated.engine !== engine) {
+          throw new Error(
+            `Generated plan engine ${validated.engine} does not match selected database engine ${engine}`
+          );
+        }
         if (engine === "mongodb") {
           const selectedLayers = new Set(
             input.layers ??

@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { access, constants } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
 import test from "node:test";
 import {
   buildAwsCliConfigYaml,
@@ -8,12 +11,14 @@ import {
   buildGitHubReleaseHeaders,
   buildReleaseAssetName,
   cliUnavailableOutcome,
+  getCliResolutionDetails,
   mapCliCleanupResult,
   mapCliCheckOutput,
   mapCliOutputProgress,
   mapCliReport,
   sanitizeCliOutput,
   executeClaimedJob,
+  resolveRevenantCli,
   type ClaimedPayload,
 } from "./execute-job.js";
 import { jobProgressSchema } from "../validations/jobs.schema.js";
@@ -21,6 +26,23 @@ import {
   assertAwsFullDrillSourceAvailable,
   type AwsSourceStatus,
 } from "../services/aws-source-status.service.js";
+
+test(
+  "finds the bundled Linux CLI even when the process working directory differs",
+  { skip: process.platform !== "linux" || process.arch !== "x64" },
+  async () => {
+    const bundledCli = resolve(process.cwd(), ".revenant-bin", "revenant");
+    await access(bundledCli, constants.X_OK);
+    const originalDirectory = process.cwd();
+    try {
+      process.chdir(tmpdir());
+      assert.equal(await resolveRevenantCli(), bundledCli);
+    } finally {
+      process.chdir(originalDirectory);
+    }
+    assert.equal(getCliResolutionDetails().source, "bundled");
+  }
+);
 
 const mongoUri =
   "mongodb+srv://validator:secret@cluster0.example.mongodb.net/app?retryWrites=true";

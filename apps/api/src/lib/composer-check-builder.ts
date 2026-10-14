@@ -332,12 +332,13 @@ export function buildChecksFromSchema(
 
 export function buildYamlFromChecks(
   planName: string,
-  checks: YamlCheck[]
+  checks: YamlCheck[],
+  engine: "postgres" | "mysql" = "postgres"
 ): string {
   const doc = {
     plan: planName,
     database: {
-      engine: "postgres",
+      engine,
       connection: "${DATABASE_URL}",
     },
     checks,
@@ -349,6 +350,7 @@ export function composeYamlFromSchema(
   analysis: SchemaAnalysis,
   options: {
     planName: string;
+    engine?: "postgres" | "mysql";
     layers?: string[];
     intent?: string;
   }
@@ -356,7 +358,8 @@ export function composeYamlFromSchema(
   const checks = buildChecksFromSchema(analysis, options);
   const yamlText = buildYamlFromChecks(
     options.planName.trim() || "restore-proof",
-    checks
+    checks,
+    options.engine
   );
   return {
     yamlText,

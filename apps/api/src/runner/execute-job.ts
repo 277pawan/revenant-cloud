@@ -11,7 +11,8 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { AwsRecoveryConfig, RecoveryMode, RunnerAwsCredentials } from "@revenant/shared";
 import {
   collectHttpHealthSpecs,
@@ -337,6 +338,26 @@ async function installLatestRevenantCli(): Promise<string | null> {
   return finalBin;
 }
 
+async function findBundledRevenantCli(): Promise<string | null> {
+  if (process.platform !== "linux" || process.arch !== "x64") return null;
+  const candidates = [
+    ...(process.env.REVENANT_CLI_DIR
+      ? [resolve(process.env.REVENANT_CLI_DIR, "revenant")]
+      : []),
+    resolve(process.cwd(), ".revenant-bin", "revenant"),
+    resolve(dirname(fileURLToPath(import.meta.url)), "../../.revenant-bin/revenant"),
+  ];
+  for (const cliPath of new Set(candidates)) {
+    try {
+      await access(cliPath, constants.X_OK);
+      return cliPath;
+    } catch {
+      // Try the other known bundle locations before requesting a download.
+    }
+  }
+  return null;
+}
+
 /** Resolve the CLI once per API process; jobs reuse the same downloaded release binary. */
 let cliResolution: Promise<string | null> | null = null;
 let cliResolutionDetails = {
@@ -349,6 +370,16 @@ export function getCliResolutionDetails(): Readonly<typeof cliResolutionDetails>
 }
 
 async function resolveRevenantCliOnce(): Promise<string | null> {
+  const bundledCli = await findBundledRevenantCli();
+  if (bundledCli) {
+    cliResolutionDetails = {
+      source: "bundled",
+      release: "image",
+    };
+    console.log(`[revenant-resolver] using bundled CLI binary=${bundledCli}`);
+    return bundledCli;
+  }
+
   try {
     const installed = await installLatestRevenantCli();
     if (installed) {
@@ -370,9 +401,16 @@ async function resolveRevenantCliOnce(): Promise<string | null> {
   return null;
 }
 
-export function resolveRevenantCli(): Promise<string | null> {
-  cliResolution ??= resolveRevenantCliOnce();
-  return cliResolution;
+export async function resolveRevenantCli(): Promise<string | null> {
+  const resolution = (cliResolution ??= resolveRevenantCliOnce());
+  try {
+    const cli = await resolution;
+    if (!cli && cliResolution === resolution) cliResolution = null;
+    return cli;
+  } catch (error) {
+    if (cliResolution === resolution) cliResolution = null;
+    throw error;
+  }
 }
 
 export function isAwsRecoveryMode(claimed: ClaimedPayload): boolean {

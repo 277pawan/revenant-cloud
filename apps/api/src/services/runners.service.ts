@@ -9,6 +9,7 @@ import { generateRunnerToken } from "../lib/runner-token.js";
 export type PlanServiceResource = {
   databaseId: string;
   databaseName: string;
+  engine: string;
   planName: string;
   planVersion: number;
   planUpdatedAt: string;
@@ -84,6 +85,7 @@ export function createRunnersService(db: Database) {
         result.push({
           databaseId: row.plan.databaseId,
           databaseName: row.database.name,
+          engine: row.database.engine,
           planName: row.plan.name,
           planVersion: row.plan.version,
           planUpdatedAt: row.plan.updatedAt.toISOString(),
