@@ -54,12 +54,14 @@ gcloud run deploy "$SERVICE" \
   --region "$REGION" \
   --allow-unauthenticated \
   --port 8080 \
-  --min-instances=0 \
+  --min-instances=1 \
   --max-instances=3 \
   --memory=2Gi \
   --cpu=2 \
+  --no-cpu-throttling \
   --timeout=3600 \
-  --concurrency=20
+  --concurrency=20 \
+  --update-env-vars=EMBEDDED_RUNNER=true
 
 URL="$(gcloud run services describe "$SERVICE" --region "$REGION" --format='value(status.url)')"
 echo ""

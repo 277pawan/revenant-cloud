@@ -18,6 +18,7 @@ import type { BillingHandlers } from "../../controllers/billing.controller.js";
 import type { RecoveryHandlers } from "../../controllers/recovery.controller.js";
 import type { RecoveryPointsHandlers } from "../../controllers/recovery-points.controller.js";
 import type { SettingsHandlers } from "../../controllers/settings.controller.js";
+import type { RedisHandlers } from "../../controllers/redis.controller.js";
 import type { Env } from "../../config/env.js";
 import type { Database } from "../../db/index.js";
 import type { JobsService } from "../../services/jobs.service.js";
@@ -39,6 +40,8 @@ import { engagementRoutes } from "./engagement.routes.js";
 import { recoveryRoutes } from "./recovery.routes.js";
 import { settingsRoutes } from "./settings.routes.js";
 import { recoveryReconcileRoutes } from "./recovery-reconcile.routes.js";
+import { redisRoutes } from "./redis.routes.js";
+import { runnerRedisRoutes } from "./runner-redis.routes.js";
 
 export async function registerV1Routes(
   app: FastifyInstance,
@@ -62,6 +65,7 @@ export async function registerV1Routes(
     recoveryHandlers: RecoveryHandlers;
     recoveryPointsHandlers: RecoveryPointsHandlers;
     settingsHandlers: SettingsHandlers;
+    redisHandlers: RedisHandlers;
     env: Env;
     db: Database;
     jobsService: JobsService;
@@ -81,6 +85,12 @@ export async function registerV1Routes(
       await databasesRoutes(api, deps.databasesHandlers);
       await recoveryRoutes(api, deps.recoveryHandlers, deps.recoveryPointsHandlers);
       await recoveryReconcileRoutes(api, deps.db, deps.env.MASTER_KEY);
+      await redisRoutes(api, deps.redisHandlers);
+      await runnerRedisRoutes(api, {
+        db: deps.db,
+        masterKey: deps.env.MASTER_KEY,
+        env: deps.env,
+      });
       await plansRoutes(api, deps.plansHandlers);
       await teamRoutes(api, deps.teamHandlers);
       await jobsRoutes(

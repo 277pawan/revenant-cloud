@@ -51,6 +51,7 @@ env["CORS_ORIGIN"] = cors
 env["PUBLIC_APP_URL"] = app_url
 env["PUBLIC_MARKETING_URL"] = marketing
 env["PUBLIC_EMAIL_LOGO_URL"] = f"{marketing}/revenant_logo.png"
+env["EMBEDDED_RUNNER"] = "true"
 
 with open(env_file, "w") as f:
     yaml.dump(env, f, default_flow_style=False)
@@ -63,6 +64,8 @@ gcloud run services update "$SERVICE" \
   --region "$REGION" \
   --project "$PROJECT_ID" \
   --env-vars-file "$ENV_FILE" \
-  --update-secrets="$SECRET_BINDINGS"
+  --update-secrets="$SECRET_BINDINGS" \
+  --min 1 \
+  --no-cpu-throttling
 
 echo "Done."

@@ -48,8 +48,18 @@ export const RECOVERY_PROVIDERS: readonly RecoveryProviderDefinition[] = [
     id: "redis",
     label: "Redis",
     role: "dependency",
-    status: "planned",
-    checkTypes: ["dependency_ping"],
+    // Beta: restore proof + optional TTL-bounded artifact retention.
+    // See ./redis.ts for the positioning rules.
+    status: "beta",
+    checkTypes: [
+      "redis_ping",
+      "redis_dbsize",
+      "redis_keyspace",
+      "redis_ttl_distribution",
+      "redis_config",
+      "redis_value_digest",
+      "redis_restore_proof",
+    ],
   },
   {
     id: "mysql",
@@ -120,6 +130,11 @@ export interface RecoveryFingerprintPayload {
     contractHash?: string;
   };
   dependencies?: string[];
+  /**
+   * Redis dependency fingerprint. Digests only — never raw keys or values.
+   * See ./redis.ts RedisFingerprint for the full shape.
+   */
+  redis?: import("./redis.js").RedisFingerprint;
   validationPlanVersion?: number;
 }
 

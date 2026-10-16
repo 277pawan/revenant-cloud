@@ -147,7 +147,7 @@ The database wizard today: **engine = Postgres only**, recovery mode = `direct` 
 | **postgres** | Restore | ✅ Available | Schema, SQL, row counts, freshness |
 | **aws-rds** | Restore | ✅ Available | Snapshot restore + DB checks |
 | **http** | Application | ✅ Available (contract) | API health, status codes, body checks |
-| **redis** | Dependency | 🔜 Planned | Cache reachable / version drift |
+| **redis** | Dependency | 🟡 Beta | Restore proof + opt-in TTL-bounded snapshots |
 | **s3** | Dependency | 🔜 Planned | Object storage reachable |
 | **mysql** | Restore | 🔜 Planned | Second DB engine (schema + SQL) |
 | **kubernetes** | Application | 🔜 Planned | Workload health after restore |
@@ -230,7 +230,7 @@ MongoDB / K8s   Enterprise expansion
 |-------|------------------------|----------------|
 | **Now** | PostgreSQL + AWS RDS | Core restore proof — **shipped** |
 | **Next** | HTTP / healthcheck | “DB restored **and** API answers” |
-| **5b** | Redis, S3 | “Cache / files were not tested” in readiness |
+| **5b** | Redis | "The cache backup nobody has ever restored" — ✅ control plane + CLI proof; agent wiring + UI pending |
 | **6** | MySQL / MariaDB | Teams on MySQL stacks |
 | **6b** | GCP Cloud SQL | GCP-native customers |
 | **Later** | MongoDB, DynamoDB, K8s workloads | Enterprise |
@@ -244,7 +244,7 @@ MongoDB / K8s   Enterprise expansion
 | Postgres | Schema hash, size, table count, plan version |
 | AWS RDS | Instance class, storage, parameter group, backup window |
 | HTTP | Contract hash, endpoint list, expected status codes |
-| Redis | Not included in last drill, version change |
+| Redis | Not included in last drill, version change, keyspace shrink vs RDB, restore mismatch |
 
 Drift **warns** first; only a failed re-verification marks the system as not recovery-ready.
 

@@ -7,6 +7,7 @@ import {
 } from "./runner/execute-job.js";
 import { startSchedulePoll } from "./scheduler/poll-schedules.js";
 import { startWeeklyDigestPoll } from "./scheduler/poll-weekly-digest.js";
+import { startRedisSnapshotSweep } from "./scheduler/redis-snapshot-sweep.js";
 import { createJobsService } from "./services/jobs.service.js";
 import { createDb } from "./db/index.js";
 
@@ -75,6 +76,7 @@ try {
     console.log("[embedded-scheduler] enabled — due schedules enqueue jobs");
     startWeeklyDigestPoll({ db, env, label: "embedded" });
     console.log("[weekly-digest] enabled — Mondays 09:00 UTC");
+    startRedisSnapshotSweep({ db, label: "embedded" });
   } else {
     console.log(
       "[embedded-scheduler] off — set EMBEDDED_SCHEDULER=true to poll schedules"

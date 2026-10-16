@@ -7,6 +7,12 @@
  * ═══════════════════════════════════════════════════════════════════════════
  */
 
+import {
+  REDIS_DEFAULT_SNAPSHOT_RETENTION_HOURS,
+  REDIS_MAX_SNAPSHOT_RETENTION_HOURS,
+  REDIS_MIN_SNAPSHOT_RETENTION_HOURS,
+} from "./redis.js";
+
 /** Cloud org plans stored on organizations.plan */
 export type OrganizationPlan = "starter" | "pro" | "enterprise";
 
@@ -15,7 +21,12 @@ export type CatalogPlanId = "developer" | OrganizationPlan;
 
 export type SubscriptionStatus = "trialing" | "active" | "past_due" | "canceled";
 
-export type PlanLimitResource = "databases" | "schedules" | "teamMembers" | "integrations";
+export type PlanLimitResource =
+  | "databases"
+  | "schedules"
+  | "teamMembers"
+  | "integrations"
+  | "redisResources";
 
 // ─── Pricing (edit amounts here only) ─────────────────────────────────────
 
@@ -49,6 +60,18 @@ export interface PlanLimits {
   directPostgresDrills: boolean;
   integrations: boolean;
   auditLogDays: number | null;
+  /** Redis instances an org may register (0 = CLI-only plan) */
+  redisResources: number | null;
+  /** Restore proofs (drills) allowed per calendar month, org-wide */
+  redisRestoreProofsPerMonth: number | null;
+  /**
+   * HARD TTL ceiling for opt-in Redis snapshot artifacts, in hours.
+   * A customer may request less than this, never more. null = fair use.
+   * There is deliberately no "keep forever" option at any tier.
+   */
+  redisSnapshotRetentionHours: number | null;
+  /** Whether this plan may store RDB artifacts in Revenant-managed storage */
+  redisSnapshotEnabled: boolean;
 }
 
 export interface PlanDefinition {
@@ -77,6 +100,10 @@ const STARTER_LIMITS: PlanLimits = {
   directPostgresDrills: false,
   integrations: true,
   auditLogDays: 30,
+  redisResources: 1,
+  redisRestoreProofsPerMonth: 4,
+  redisSnapshotRetentionHours: 24,
+  redisSnapshotEnabled: true,
 };
 
 const PRO_LIMITS: PlanLimits = {
@@ -92,6 +119,10 @@ const PRO_LIMITS: PlanLimits = {
   directPostgresDrills: true,
   integrations: true,
   auditLogDays: 365,
+  redisResources: 10,
+  redisRestoreProofsPerMonth: 30,
+  redisSnapshotRetentionHours: 168,
+  redisSnapshotEnabled: true,
 };
 
 export const PLAN_DEFINITIONS: Record<CatalogPlanId, PlanDefinition> = {
@@ -106,6 +137,7 @@ export const PLAN_DEFINITIONS: Record<CatalogPlanId, PlanDefinition> = {
     highlights: [
       "revenant CLI + GitHub Action (no cloud account)",
       "AWS snapshot restore in your own AWS account",
+      "Run Redis restore proofs locally — no Revenant Cloud storage",
       "YAML in git — no dashboard or evidence vault",
     ],
     limits: {
@@ -121,6 +153,13 @@ export const PLAN_DEFINITIONS: Record<CatalogPlanId, PlanDefinition> = {
       directPostgresDrills: true,
       integrations: false,
       auditLogDays: null,
+      // CLI-only plan: `revenant redis-prove` runs on the customer's
+      // own machine at no cost, but there is no cloud control plane to store
+      // artifacts in. Upgrade to keep snapshots centrally.
+      redisResources: 0,
+      redisRestoreProofsPerMonth: null,
+      redisSnapshotRetentionHours: null,
+      redisSnapshotEnabled: false,
     },
   },
   starter: {
@@ -135,6 +174,7 @@ export const PLAN_DEFINITIONS: Record<CatalogPlanId, PlanDefinition> = {
       `${STARTER_TRIAL_DAYS}-day free trial, then ${STARTER_PRICE_LABEL}`,
       "1 production RDS workflow — managed AWS restore drill",
       "No Docker — Revenant cloud executes drills",
+      "1 Redis instance — 4 restore proofs/mo, opt-in snapshots up to 24h",
       "Evidence (30 days), schedules, Proof Composer, email",
     ],
     limits: STARTER_LIMITS,
@@ -152,6 +192,8 @@ export const PLAN_DEFINITIONS: Record<CatalogPlanId, PlanDefinition> = {
       "Revenant-managed AWS drills (no Docker by default)",
       "3 parallel restore drills",
       "Optional agent for private-network Postgres only",
+      "MongoDB read-only validation checks — separate from SQL and AWS restore drills",
+      "10 Redis instances — 30 restore proofs/mo, opt-in snapshots up to 7 days",
       "Slack, email, HTTP · 1-year evidence + audit",
     ],
     limits: PRO_LIMITS,
@@ -182,6 +224,10 @@ export const PLAN_DEFINITIONS: Record<CatalogPlanId, PlanDefinition> = {
       directPostgresDrills: true,
       integrations: true,
       auditLogDays: null,
+      redisResources: null,
+      redisRestoreProofsPerMonth: null,
+      redisSnapshotRetentionHours: null,
+      redisSnapshotEnabled: true,
     },
   },
 };
@@ -220,4 +266,50 @@ export function upgradePlanTarget(current: OrganizationPlan): OrganizationPlan |
   if (current === "starter") return "pro";
   if (current === "pro") return "enterprise";
   return null;
+}
+
+// ─── Redis snapshot TTL policy ─────────────────────────────────────────────
+
+/** Highest TTL this plan may be granted, in hours. null = fair use. */
+export function redisSnapshotRetentionCeiling(
+  plan: OrganizationPlan
+): number | null {
+  return getPlanDefinition(plan).limits.redisSnapshotRetentionHours;
+}
+
+/**
+ * Resolve the TTL to actually store on a Redis snapshot.
+ *
+ * Clamps DOWN to the plan ceiling — a customer asking for 1 year on Starter
+ * gets 24 hours, never more. Falls back to the shared default when nothing is
+ * requested. There is intentionally no path that returns null: every stored
+ * artifact has a deadline, because an unbounded snapshot in someone else's
+ * bucket is an unbounded bill and an unbounded liability.
+ */
+export function resolveRedisSnapshotRetentionHours(
+  plan: OrganizationPlan,
+  requested: number | null | undefined
+): number {
+  const fallback = REDIS_DEFAULT_SNAPSHOT_RETENTION_HOURS;
+  const ceiling = redisSnapshotRetentionCeiling(plan);
+
+  const wanted =
+    typeof requested === "number" && Number.isFinite(requested)
+      ? Math.max(REDIS_MIN_SNAPSHOT_RETENTION_HOURS, Math.floor(requested))
+      : fallback;
+
+  if (ceiling == null) {
+    return Math.min(wanted, REDIS_MAX_SNAPSHOT_RETENTION_HOURS);
+  }
+  return Math.min(wanted, ceiling, REDIS_MAX_SNAPSHOT_RETENTION_HOURS);
+}
+
+/** Restore proofs remaining this calendar month. null = unlimited. */
+export function redisRestoreProofsRemaining(
+  plan: OrganizationPlan,
+  used: number
+): number | null {
+  const limit = getPlanDefinition(plan).limits.redisRestoreProofsPerMonth;
+  if (limit == null) return null;
+  return Math.max(0, limit - used);
 }

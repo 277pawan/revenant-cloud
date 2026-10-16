@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Revenant Redis — architecture, snapshots & restore</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Outfit:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --cream:#f7f5f0;
+    --card:#ffffff;
+    --line:#e9e3d6;
+    --line-soft:#f0ece3;
+    --ink:#14171e;
+    --body:#3a4256;
+    --muted:#7c7a72;
+    --primary:#2f6f5e;
+    --primary-soft:rgba(47,111,94,.08);
+    --accent:#c97b3f;
+    --danger:#b06367;
+    --sans:'Outfit',sans-serif;
+    --serif:'DM Serif Display',serif;
+    --mono:'JetBrains Mono',monospace;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0;background:var(--cream);color:var(--body);
+    font-family:var(--sans);font-size:16px;line-height:1.65;
+    -webkit-font-smoothing:antialiased;
+  }
+  body::before{
+    content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+    background:
+      radial-gradient(760px 420px at 12% -4%, rgba(47,111,94,.07), transparent 62%),
+      radial-gradient(660px 400px at 92% 2%, rgba(201,123,63,.06), transparent 60%);
+  }
+  .wrap{position:relative;z-index:1;max-width:1024px;margin:0 auto;padding:0 24px}
+  @media(min-width:768px){.wrap{padding:0 32px}}
+  section{margin:72px 0}
+  @media(max-width:768px){section{margin:52px 0}}
+
+  h1{font-family:var(--serif);font-weight:400;font-size:clamp(30px,5vw,44px);line-height:1.12;
+     letter-spacing:-.015em;color:var(--ink);margin:0 0 14px}
+  h2{font-family:var(--serif);font-weight:400;font-size:clamp(23px,3.2vw,29px);
+     letter-spacing:-.01em;color:var(--ink);margin:0 0 8px;line-height:1.2}
+  h3{font-size:15px;font-weight:600;color:var(--ink);margin:0 0 6px;letter-spacing:-.005em}
+  p{margin:0 0 12px}
+  .lede{font-size:18px;color:var(--body);max-width:62ch}
+  .sub{color:var(--muted);font-size:15px;margin:0 0 22px;max-width:66ch}
+  .eyebrow{
+    font-size:12px;font-weight:600;letter-spacing:.13em;text-transform:uppercase;
+    color:var(--primary);margin:0 0 12px;display:flex;align-items:center;gap:8px
+  }
+  .eyebrow svg{width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:2;
+    stroke-linecap:round;stroke-linejoin:round;flex:none}
+
+  header.top{padding:76px 0 12px}
+  .pill{
+    display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line);
+    background:#fff;border-radius:999px;padding:5px 13px;font-size:12.5px;color:var(--muted);
+    margin-bottom:20px
+  }
+  .dot{width:6px;height:6px;border-radius:50%;background:var(--primary)}
+
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;
+    padding:24px;box-shadow:0 2px 8px rgba(0,0,0,.04);
+    transition:box-shadow .2s,transform .2s}
+  .card:hover{box-shadow:0 4px 16px -2px rgba(0,0,0,.06)}
+
+  /* ── architecture diagram ── */
+  .arch{display:grid;gap:14px}
+  .layer{display:grid;grid-template-columns:150px 1fr;gap:18px;align-items:center;
+    background:#fff;border:1px solid var(--line);border-radius:14px;padding:16px 18px}
+  @media(max-width:720px){.layer{grid-template-columns:1fr;gap:8px}}
+  .layer-name{font-size:13px;font-weight:600;color:var(--ink)}
+  .layer-name span{display:block;font-weight:400;font-size:12px;color:var(--muted);margin-top:2px}
+  .layer-body{display:flex;flex-wrap:wrap;gap:8px}
+  .chip{border:1px solid var(--line);border-radius:9px;padding:6px 11px;font-size:12.5px;
+    color:var(--body);background:var(--cream);font-family:var(--mono)}
+  .chip.hl{border-color:rgba(47,111,94,.4);background:var(--primary-soft);color:var(--primary)}
+  .chip.warn{border-color:rgba(201,123,63,.45);background:rgba(201,123,63,.08);color:var(--accent)}
+  .arrow-v{display:flex;justify-content:center;color:var(--line)}
+  .arrow-v svg{width:17px;height:17px;stroke:currentColor;fill:none;stroke-width:2;
+    stroke-linecap:round;stroke-linejoin:round}
+
+  /* ── timeline ── */
+  .timeline{list-style:none;padding:0;margin:0;position:relative}
+  .timeline::before{content:"";position:absolute;left:9px;top:8px;bottom:8px;width:2px;
+    background:var(--primary);opacity:.3}
+  .timeline li{position:relative;padding:0 0 26px 36px}
+  .timeline li::before{content:"";position:absolute;left:3px;top:5px;width:14px;height:14px;
+    border-radius:50%;background:#fff;border:2px solid var(--primary)}
+  .timeline li.branch::before{background:var(--accent);border-color:var(--accent)}
+  .timeline b{display:block;color:var(--ink);font-size:15px;margin-bottom:3px}
+  .timeline p{margin:0;font-size:14.5px;max-width:60ch}
+  .timeline code{font-family:var(--mono);font-size:12.5px;background:var(--cream);
+    border:1px solid var(--line);border-radius:5px;padding:1px 6px;color:var(--ink)}
+
+  /* ── bench bars ── */
+  .bench{display:grid;grid-template-columns:104px 1fr 92px;gap:12px;align-items:center;padding:7px 0}
+  .bench-label{font-family:var(--mono);font-size:12.5px;color:var(--body)}
+  .bench-track{height:22px;background:var(--line-soft);border-radius:7px;overflow:hidden}
+  .bench-fill{height:100%;border-radius:7px;transition:width .6s cubic-bezier(.2,.7,.3,1)}
+  .bench-val{font-family:var(--mono);font-size:12.5px;color:var(--muted);text-align:right}
+  @media(max-width:560px){
+    .bench{grid-template-columns:78px 1fr;gap:8px}
+    .bench-val{grid-column:2;text-align:left}
+  }
+
+  .kv{display:grid;grid-template-columns:132px 1fr;row-gap:0;column-gap:16px;margin:0}
+  .kv dt{color:var(--muted);font-size:13.5px;padding:9px 0;border-bottom:1px dashed var(--line)}
+  .kv dd{margin:0;padding:9px 0;border-bottom:1px dashed var(--line);color:var(--ink);font-size:14.5px}
+  @media(max-width:560px){.kv{grid-template-columns:1fr;row-gap:0}
+    .kv dd{border-bottom:none;padding-top:0;padding-bottom:12px}}
+
+  .split{display:grid;grid-template-columns:1.15fr .85fr;gap:18px}
+  @media(max-width:820px){.split{grid-template-columns:1fr}}
+
+  .note{border-radius:12px;padding:14px 16px;font-size:14px;border:1px solid}
+  .note.bad{background:rgba(176,99,103,.07);border-color:rgba(176,99,103,.28);color:#7d4348}
+  .note.good{background:var(--primary-soft);border-color:rgba(47,111,94,.28);color:#22564a}
+  .note b{color:inherit;font-weight:600}
+
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:720px){.grid2{grid-template-columns:1fr}}
+  .mini{background:#fff;border:1px solid var(--line);border-radius:14px;padding:18px}
+  .mini p{font-size:14px;margin:0}
+  .mini .stat{font-family:var(--mono);font-size:24px;color:var(--primary);display:block;margin-bottom:4px}
+  .mini .lbl{font-size:12.5px;color:var(--muted)}
+
+  footer{border-top:1px solid var(--line);margin-top:80px;padding:28px 0 60px;
+    color:var(--muted);font-size:13px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="pill"><span class="dot"></span> Self-hosted Redis · no AWS</div>
+  <h1>Proving a Redis backup actually restores</h1>
+  <p class="lede">A cache keeps its RDB on the same disk that fails, and nobody checks whether that file still loads. Revenant takes a real snapshot off a live Redis, boots a throwaway server against that exact file, and reports what came back.</p>
+</header>
+
+<!-- ── 1. Where the bytes live ── -->
+<section>
+  <div class="eyebrow">
+    <svg viewBox="0 0 24 24"><path d="M3 7v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V7"/><path d="M3 7l2-3h14l2 3"/><path d="M12 11v6"/><path d="M9 14h6"/></svg>
+    Architecture
+  </div>
+  <h2>Four layers, and bytes only exist in one of them</h2>
+  <p class="sub">The rule that keeps this cheap: <strong>metadata in Postgres, bytes in object storage — or nowhere.</strong></p>
+
+  <div class="arch">
+    <div class="layer">
+      <div class="layer-name">Your Redis<span>never leaves your network</span></div>
+      <div class="layer-body">
+        <span class="chip">live keyspace</span>
+        <span class="chip">INFO keyspace</span>
+        <span class="chip warn">no SCAN, no Lua</span>
+      </div>
+    </div>
+    <div class="arrow-v"><svg viewBox="0 0 24 24"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></svg></div>
+    <div class="layer">
+      <div class="layer-name">Control plane<span>Postgres · metadata only</span></div>
+      <div class="layer-body">
+        <span class="chip hl">redis_resources</span>
+        <span class="chip hl">redis_credentials</span>
+        <span class="chip hl">redis_proofs</span>
+        <span class="chip hl">redis_snapshots</span>
+      </div>
+    </div>
+    <div class="arrow-v"><svg viewBox="0 0 24 24"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></svg></div>
+    <div class="layer">
+      <div class="layer-name">Artifact store<span>the RDB, TTL-bounded</span></div>
+      <div class="layer-body">
+        <span class="chip">local disk today</span>
+        <span class="chip">R2 / B2 later</span>
+        <span class="chip warn">hard-deleted at expiry</span>
+      </div>
+    </div>
+    <div class="arrow-v"><svg viewBox="0 0 24 24"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></svg></div>
+    <div class="layer">
+      <div class="layer-name">Sandbox<span>agent · Docker</span></div>
+      <div class="layer-body">
+        <span class="chip hl">redis-server --save ""</span>
+        <span class="chip hl">--appendonly no</span>
+        <span class="chip">random 127.0.0.1 port</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="split" style="margin-top:18px">
+    <div class="card">
+      <h3>Why the sandbox runs with persistence off</h3>
+      <p style="font-size:14.5px;margin:0">The restored server is booted with <code style="font-family:var(--mono);font-size:12.5px">--save "" --appendonly no</code> and a read-only mount of the scratch directory. It physically cannot write back into your dump, and it cannot leave a second file behind.</p>
+    </div>
+    <div class="card">
+      <h3>Why nothing expensive runs on the live cache</h3>
+      <p style="font-size:14.5px;margin:0">A proof must never stall production traffic. Source-side numbers come only from <code style="font-family:var(--mono);font-size:12.5px">INFO keyspace</code>, which is O(number of databases). No SCAN, no Lua, no O(N) walk against your real Redis.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ── 2. How a user connects ── -->
+<section>
+  <div class="eyebrow">
+    <svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg>
+    Connecting
+  </div>
+  <h2>From a pasted URL to a running proof</h2>
+  <p class="sub">Four steps, and the first one saves nothing.</p>
+
+  <ol class="timeline">
+    <li>
+      <b>Paste and test</b>
+      <p><code>redis://:password@host:6379/0</code> or <code>rediss://</code> for TLS. <strong>Nothing is stored.</strong> The API opens a connection, PINGs, and returns a fingerprint. An unreachable Redis is a <em>valid answer</em>, not a failure — it comes back amber with "use the CLI or the agent", because a private-network Redis is the expected case.</p>
+    </li>
+    <li>
+      <b>Register it</b>
+      <p>The URL is encrypted with AES-256-GCM and written to <code>redis_credentials</code>. It is never returned by any endpoint, never logged, and <code>requirepass</code> is recorded only as <strong>SET</strong> or <strong>NOT SET</strong> — the value itself is discarded.</p>
+    </li>
+    <li class="branch">
+      <b>Choose whether to keep anything</b>
+      <p>Off by default. With storage off, Revenant verifies and keeps <em>nothing</em>. With it on, each artifact gets a mandatory TTL that the API clamps down to your plan — ask for a year on Starter, get 24 hours.</p>
+    </li>
+    <li>
+      <b>Run a proof</b>
+      <p>Click Run. A <code>redis_proofs</code> row goes to <strong>pending</strong> and your monthly quota is counted. An agent claims it, does the work, and reports back. If no agent exists, the row simply waits — it never silently burns quota.</p>
+    </li>
+  </ol>
+</section>
+
+<!-- ── 3. Capture & restore ── -->
+<section>
+  <div class="eyebrow">
+    <svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v6h-6"/></svg>
+    Snapshot &amp; restore
+  </div>
+  <h2>How a snapshot is captured and proven</h2>
+  <p class="sub">The whole point is that checks run against the <em>restored</em> instance, not the live one.</p>
+
+  <ol class="timeline">
+    <li>
+      <b>Claim</b>
+      <p>Two indexed queries with <code style="font-family:var(--mono);font-size:12.5px">FOR UPDATE … SKIP LOCKED</code>. Concurrent agents never collide. Idle cost is an index-only scan of a near-empty partial index.</p>
+    </li>
+    <li>
+      <b>Pull the dump — without touching your disk</b>
+      <p><code style="font-family:var(--mono);font-size:12.5px">redis-cli --rdb dump.rdb</code> asks the <em>server</em> to stream a complete RDB over the wire. No filesystem access, no local <code style="font-family:var(--mono);font-size:12.5px">redis-cli</code> needed, and it works when Redis lives in a container or a volume.</p>
+    </li>
+    <li>
+      <b>Boot a throwaway server against that copy</b>
+      <p>The dump is copied to a scratch dir, a random loopback port is bound, and the sandbox is started with persistence disabled. Revenant waits for it to answer PING rather than assuming success — a large RDB takes real time to load.</p>
+    </li>
+    <li>
+      <b>Check the restored instance</b>
+      <p><code style="font-family:var(--mono);font-size:12.5px">DBSIZE</code>, keyspace counts, config posture, and a keyspace digest — all against the copy. Source key counts come from <code style="font-family:var(--mono);font-size:12.5px">INFO keyspace</code> and are compared.</p>
+    </li>
+    <li class="branch">
+      <b>Compare, honestly</b>
+      <p>An exact key-count match is <em>not</em> required — keys legitimately expire between capture and restore. A small shortfall passes; 50% or more is reported as a failure with "check your <code style="font-family:var(--mono);font-size:12.5px">save</code> policy", because that usually means a stale dump.</p>
+    </li>
+  </ol>
+
+  <div class="note good" style="margin-top:8px">
+    <b>What a large key shortfall usually means:</b> the RDB is stale, not corrupt. Redis's default <code style="font-family:var(--mono)">save 3600 1</code> only snapshots once an hour <em>and</em> only after a write. A cache that went quiet for two hours has a dump that is two hours old — and this is exactly the failure the product exists to surface.
+  </div>
+</section>
+
+<!-- ── 4. Compression ── -->
+<section>
+  <div class="eyebrow">
+    <svg viewBox="0 0 24 24"><path d="M21 8v13H3V8"/><path d="M1 3h22v5H1z"/><path d="M10 12h4"/></svg>
+    Compression
+  </div>
+  <h2>Measured, because the first assumption was wrong</h2>
+  <p class="sub">An earlier draft claimed an RDB is "already LZF-compressed, so re-compressing buys only 5–15%". That was measured, and it was wrong. LZF trades ratio for BGSAVE speed and leaves a lot behind.</p>
+
+  <div class="grid2" style="margin-bottom:22px">
+    <div class="mini">
+      <span class="stat">72.8%</span>
+      <span class="lbl">smaller with gzip — 40k mixed cache keys, RDB 2,900,435 B → 788,756 B</span>
+    </div>
+    <div class="mini">
+      <span class="stat">86.9%</span>
+      <span class="lbl">smaller with gzip — 20k JSON product docs, RDB 2,089,173 B → 274,129 B</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-bottom:16px">Stored size, lower is better — mixed realistic cache</h3>
+    <div class="bench">
+      <span class="bench-label">none</span>
+      <div class="bench-track"><div class="bench-fill" style="width:100%;background:var(--muted)"></div></div>
+      <span class="bench-val">2,900,435 B</span>
+    </div>
+    <div class="bench">
+      <span class="bench-label">gzip -6</span>
+      <div class="bench-track"><div class="bench-fill" style="width:27.2%;background:var(--primary)"></div></div>
+      <span class="bench-val">788,756 B</span>
+    </div>
+    <div class="bench">
+      <span class="bench-label">zstd -9</span>
+      <div class="bench-track"><div class="bench-fill" style="width:24.7%;background:var(--accent)"></div></div>
+      <span class="bench-val">716,642 B</span>
+    </div>
+    <p style="font-size:13.5px;color:var(--muted);margin:18px 0 0">
+      All three round-trip byte-identical through the shipped code. gunzip runs at <strong>~322 MB/s</strong> single-core, so decompression is noise in a restore — which is why <strong>gzip is the default</strong>, and zstd is opt-in on Node ≥ 22.15.
+    </p>
+  </div>
+
+  <div class="note good" style="margin-top:16px">
+    <b>The encoding is recorded per artifact</b> in <code style="font-family:var(--mono)">redis_snapshots.compression</code>, and the file extension is derived from it. Changing the setting later can never break restoring an older snapshot — the row always knows how it was actually written.
+  </div>
+</section>
+
+<!-- ── 5. TTL ── -->
+<section>
+  <div class="eyebrow">
+    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+    Retention
+  </div>
+  <h2>The TTL is the feature</h2>
+  <p class="sub">An unbounded snapshot in our bucket is an unbounded bill and an unbounded data-protection obligation. There is no code path that produces one.</p>
+
+  <div class="split">
+    <div class="card">
+      <h3 style="margin-bottom:14px">Three independent guards</h3>
+      <dl class="kv">
+        <dt>Schema</dt><dd><code style="font-family:var(--mono);font-size:12.5px">expires_at NOT NULL</code> — no deadline, no row.</dd>
+        <dt>Constraint</dt><dd>A <code style="font-family:var(--mono);font-size:12.5px">CHECK</code> rejects an enabled resource with no positive retention window, at the database level.</dd>
+        <dt>Clamp</dt><dd><code style="font-family:var(--mono);font-size:12.5px">resolveRedisSnapshotRetentionHours()</code> clamps <em>down</em> to the plan ceiling. 8760 requested → 24 granted.</dd>
+        <dt>Sweeper</dt><dd>Every 5 minutes, expired artifacts are <strong>hard-deleted</strong> — the bytes, not just the row.</dd>
+      </dl>
+    </div>
+    <div>
+      <div class="card" style="margin-bottom:14px">
+        <h3>Developer — free</h3>
+        <p style="font-size:14.5px;margin:0">Runs from your own machine. No account, no agent, no cloud.</p>
+        <code style="display:block;margin-top:10px;font-family:var(--mono);font-size:12.5px;background:var(--cream);border:1px solid var(--line);border-radius:8px;padding:10px;color:var(--ink)">revenant redis-prove --url redis://…</code>
+      </div>
+      <div class="mini">
+        <h3>Starter ₹499 / Pro ₹1,499</h3>
+        <p style="color:var(--muted)">1 Redis · 4 proofs/mo · <strong>24h</strong> TTL &nbsp;/&nbsp; 10 Redis · 30 proofs/mo · <strong>7-day</strong> TTL</p>
+        <p style="margin-top:8px">Paid tiers sell <em>retention and repeated proof</em> — never bytes.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── 6. What is never stored ── -->
+<section>
+  <div class="eyebrow">
+    <svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+    Safety
+  </div>
+  <h2>What never reaches Revenant</h2>
+  <p class="sub">Digests are computed server-side with <code style="font-family:var(--mono)">redis.sha1hex</code>, inside the sandbox, so no raw key or value crosses into our memory or database.</p>
+
+  <div class="card">
+    <dl class="kv" style="grid-template-columns:150px 1fr">
+      <dt>Keyspace counts, TTL histogram</dt><dd style="color:var(--primary)">Stored — numbers only</dd>
+      <dt><code style="font-family:var(--mono);font-size:12.5px">maxmemory-policy</code>, <code style="font-family:var(--mono);font-size:12.5px">appendonly</code>, <code style="font-family:var(--mono);font-size:12.5px">save</code></dt><dd style="color:var(--primary)">Stored — no secrets</dd>
+      <dt><code style="font-family:var(--mono);font-size:12.5px">requirepass</code></dt><dd><strong>Only SET / NOT SET</strong> — the value is discarded</dd>
+      <dt>Sampled keys and values</dt><dd><strong>SHA-256 digests only</strong></dd>
+      <dt>Redis URL with password</dt><dd>AES-256-GCM ciphertext, never returned by any endpoint</dd>
+      <dt>RDB bytes</dt><dd>Only with opt-in, always with a TTL</dd>
+    </dl>
+  </div>
+</section>
+
+<footer>
+  Revenant Redis provider · compression figures measured locally against real RDBs ·
+  source of truth <code>docs/REDIS_PROVIDER.md</code>
+</footer>
+
+</div>
+</body>
+</html>

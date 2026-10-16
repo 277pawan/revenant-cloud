@@ -9,6 +9,7 @@ import {
   varchar,
   text,
   integer,
+  bigint,
   timestamp,
   uniqueIndex,
   jsonb,
@@ -694,6 +695,163 @@ export const siteEngagementEvents = pgTable("site_engagement_events", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+/**
+ * Redis resources — a customer's Redis instance under recovery proof.
+ *
+ * STORAGE RULE: this row and its siblings hold METADATA ONLY. RDB bytes are
+ * never stored in the control-plane database; they live in the ArtifactStore
+ * and are referenced by redis_snapshots.storage_key.
+ *
+ * snapshotRetentionHours is a mandatory TTL enforced by the DB constraint and
+ * by the sweeper in redis-snapshots.service.ts. There is no "keep forever".
+ */
+export const redisResources = pgTable(
+  "redis_resources",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    /** Optional — Redis can also be verified standalone */
+    databaseId: uuid("database_id").references(() => databases.id, {
+      onDelete: "set null",
+    }),
+    name: varchar("name", { length: 255 }).notNull(),
+    host: varchar("host", { length: 255 }).notNull(),
+    port: integer("port").notNull().default(6379),
+    dbIndex: integer("db_index").notNull().default(0),
+    username: varchar("username", { length: 255 }),
+    tls: varchar("tls", { length: 10 }).notNull().default("false"),
+    engineVersion: varchar("engine_version", { length: 50 }),
+    /** Opt-in storage. When false we verify but store nothing. */
+    snapshotEnabled: varchar("snapshot_enabled", { length: 10 })
+      .notNull()
+      .default("false"),
+    /** MANDATORY TTL in hours when snapshotEnabled is true */
+    snapshotRetentionHours: integer("snapshot_retention_hours"),
+    lastVerifiedAt: timestamp("last_verified_at", { withTimezone: true }),
+    lastVerificationStatus: varchar("last_verification_status", { length: 50 })
+      .notNull()
+      .default("never"),
+    lastRestoreProofSeconds: integer("last_restore_proof_seconds"),
+    lastRpoObservedSeconds: integer("last_rpo_observed_seconds"),
+    /** RedisFingerprint — digests only, never raw keys or values */
+    fingerprintJson: jsonb("fingerprint_json"),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("redis_resources_org_name_uidx").on(table.organizationId, table.name),
+  ]
+);
+
+/** Encrypted Redis URL (redis:// | rediss://) — AES-256-GCM, 1:1 per resource. */
+export const redisCredentials = pgTable(
+  "redis_credentials",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    redisResourceId: uuid("redis_resource_id")
+      .notNull()
+      .references(() => redisResources.id, { onDelete: "cascade" }),
+    ciphertext: text("ciphertext").notNull(),
+    iv: text("iv").notNull(),
+    authTag: text("auth_tag").notNull(),
+    keyVersion: integer("key_version").notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("redis_credentials_resource_id_uidx").on(table.redisResourceId),
+  ]
+);
+
+/**
+ * Opt-in Redis snapshot artifacts. expiresAt is NOT NULL — the sweeper
+ * hard-deletes the artifact and marks the row. Bytes live in ArtifactStore.
+ */
+export const redisSnapshots = pgTable(
+  "redis_snapshots",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    redisResourceId: uuid("redis_resource_id")
+      .notNull()
+      .references(() => redisResources.id, { onDelete: "cascade" }),
+    jobId: uuid("job_id").references(() => jobs.id, { onDelete: "set null" }),
+    /** capturing | stored | expired | deleted | failed */
+    status: varchar("status", { length: 50 }).notNull().default("capturing"),
+    byteSize: bigint("byte_size", { mode: "number" }),
+    checksumSha256: varchar("checksum_sha256", { length: 64 }),
+    /** ACTUAL encoding of the stored bytes: none | gzip. Never aspirational. */
+    compression: varchar("compression", { length: 16 }).notNull().default("none"),
+    storageKey: varchar("storage_key", { length: 512 }),
+    metadataJson: jsonb("metadata_json"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    lastVerifiedAt: timestamp("last_verified_at", { withTimezone: true }),
+    lastVerificationStatus: varchar("last_verification_status", { length: 50 })
+      .notNull()
+      .default("never"),
+    errorMessage: text("error_message"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("redis_snapshots_org_checksum_uidx").on(
+      table.organizationId,
+      table.checksumSha256
+    ),
+  ]
+);
+
+/**
+ * Restore-proof ledger — one row per proof attempt, stored or not.
+ * This is what the plan quota counts and what the RTO trend reads. Separate
+ * from redisSnapshots so "we ran a proof" and "we kept bytes" stay distinct.
+ */
+export const redisProofs = pgTable(
+  "redis_proofs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    redisResourceId: uuid("redis_resource_id")
+      .notNull()
+      .references(() => redisResources.id, { onDelete: "cascade" }),
+    snapshotId: uuid("snapshot_id").references(() => redisSnapshots.id, {
+      onDelete: "set null",
+    }),
+    triggeredByUserId: uuid("triggered_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    /** pending | running | pass | fail | error */
+    status: varchar("status", { length: 50 }).notNull().default("pending"),
+    /** Did the throwaway redis-server actually boot from the RDB? */
+    restored: varchar("restored", { length: 10 }),
+    sourceKeyCount: integer("source_key_count"),
+    restoredKeyCount: integer("restored_key_count"),
+    rdbBytes: bigint("rdb_bytes", { mode: "number" }),
+    restoreSeconds: integer("restore_seconds"),
+    rpoObservedSeconds: integer("rpo_observed_seconds"),
+    rdbLastBgsaveStatus: varchar("rdb_last_bgsave_status", { length: 50 }),
+    errorMessage: text("error_message"),
+    metadataJson: jsonb("metadata_json"),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  }
+);
+
 export type Organization = typeof organizations.$inferSelect;
 export type User = typeof users.$inferSelect;
 export type DatabaseRow = typeof databases.$inferSelect;
@@ -719,3 +877,7 @@ export type RecoveryRun = typeof recoveryRuns.$inferSelect;
 export type RecoveryInstance = typeof recoveryInstances.$inferSelect;
 export type BillingOrder = typeof billingOrders.$inferSelect;
 export type FundingPayment = typeof fundingPayments.$inferSelect;
+export type RedisResource = typeof redisResources.$inferSelect;
+export type RedisCredential = typeof redisCredentials.$inferSelect;
+export type RedisSnapshot = typeof redisSnapshots.$inferSelect;
+export type RedisProof = typeof redisProofs.$inferSelect;

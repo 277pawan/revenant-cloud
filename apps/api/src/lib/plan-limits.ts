@@ -5,7 +5,7 @@ import {
   type PlanLimitResource,
 } from "@revenant/shared";
 import type { Database } from "../db/index.js";
-import { databases, jobs, organizations, schedules, users, webhookEndpoints } from "../db/schema.js";
+import { databases, jobs, organizations, redisResources, schedules, users, webhookEndpoints } from "../db/schema.js";
 import { createAppError } from "./errors.js";
 import {
   messageAwsDrillsBlocked,
@@ -89,6 +89,13 @@ export async function countPlanResource(
         .select({ value: count() })
         .from(webhookEndpoints)
         .where(eq(webhookEndpoints.organizationId, organizationId));
+      return Number(row?.value ?? 0);
+    }
+    case "redisResources": {
+      const [row] = await db
+        .select({ value: count() })
+        .from(redisResources)
+        .where(eq(redisResources.organizationId, organizationId));
       return Number(row?.value ?? 0);
     }
     default:

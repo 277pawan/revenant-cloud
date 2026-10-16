@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-rds": "^3.1141.0",
+    "@aws-sdk/client-s3": "^3.1152.0",
     "@fastify/cookie": "^11.0.2",
     "@fastify/cors": "^10.0.2",
     "@fastify/jwt": "^9.0.2",

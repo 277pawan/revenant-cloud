@@ -31,6 +31,7 @@ import { createRecoveryPostProcessService } from "./services/recovery-post-proce
 import { createRecoveryHandlers } from "./controllers/recovery.controller.js";
 import { createRecoveryPointsHandlers } from "./controllers/recovery-points.controller.js";
 import { createRecoveryPointsService } from "./services/recovery-points.service.js";
+import { createRedisHandlers } from "./controllers/redis.controller.js";
 import { generateCorrelationId, recordRequest } from "./lib/observability.js";
 import { createPlansHandlers } from "./controllers/plans.controller.js";
 import { createTeamHandlers } from "./controllers/team.controller.js";
@@ -250,6 +251,11 @@ export async function buildApp(env: Env) {
       auditService,
     ),
     settingsHandlers: createSettingsHandlers(settingsService, auditService),
+    redisHandlers: createRedisHandlers({
+      db,
+      masterKey: env.MASTER_KEY,
+      redisProbeEnabled: env.REDIS_PROBE_ENABLED,
+    }),
     env,
     db,
     jobsService,

@@ -63,6 +63,55 @@ const envSchema = z.object({
   /** Directory for signed evidence JSON artifacts */
   EVIDENCE_DIR: z.string().default("./data/evidence"),
   /**
+   * Where opt-in Redis RDB artifacts are stored.
+   * "local" = filesystem under REDIS_ARTIFACT_DIR (dev / zero-budget).
+   * Production should be a zero-egress S3-compatible bucket (Cloudflare R2 or
+   * Backblaze B2) — NOT AWS S3 or GCS, whose per-GB egress fees dominate a
+   * restore-heavy product. See src/lib/artifact-store.ts before changing this.
+   */
+  REDIS_ARTIFACT_BACKEND: z.enum(["local", "r2"]).default("local"),
+  REDIS_ARTIFACT_DIR: z.string().default("./data/redis-artifacts"),
+  /**
+   * Cloudflare R2 credentials. Required only when REDIS_ARTIFACT_BACKEND=r2.
+   *
+   * R2 is S3-compatible and charges $0 egress, which matters because every
+   * restore pulls the artifact back down — egress is the cost that scales with
+   * success. The same code works against Backblaze B2 or a self-hosted MinIO by
+   * changing R2_ENDPOINT.
+   *
+   * Create the token in Cloudflare → R2 → Manage R2 API Tokens, scoped to
+   * Object Read & Write on the one bucket.
+   */
+  R2_ACCOUNT_ID: z.string().optional(),
+  R2_ACCESS_KEY_ID: z.string().optional(),
+  R2_SECRET_ACCESS_KEY: z.string().optional(),
+  R2_BUCKET: z.string().optional(),
+  /** Override for B2 / MinIO. Leave unset for R2. */
+  R2_ENDPOINT: z.string().optional(),
+  /**
+   * Encoding for stored RDB artifacts: none | gzip | zstd. Default gzip.
+   *
+   * MEASURED on real RDBs (20k JSON product docs and 40k mixed cache keys):
+   *   2,089,173 B → 274,129 B gzip  (86.9% smaller)
+   *   2,900,435 B → 788,756 B gzip  (72.8% smaller)
+   *               → 716,642 B zstd  (75.3% smaller)
+   * gunzip runs ~322 MB/s single-core, so decompression is noise in a restore.
+   *
+   * An earlier revision of this comment claimed an RDB was "already LZF
+   * compressed, so a second pass gains only 5-15%" and defaulted to none. That
+   * was wrong: LZF trades ratio for BGSAVE speed and leaves a lot behind.
+   *
+   * Whatever is set is RECORDED per snapshot in redis_snapshots.compression,
+   * so changing this never breaks restoring an older artifact. 'zstd' silently
+   * degrades to gzip on Node < 22.15 rather than failing.
+   */
+  REDIS_ARTIFACT_COMPRESSION: z.enum(["none", "gzip", "zstd"]).default("gzip"),
+  /** Outbound Redis connections the API may make for URL testing */
+  REDIS_PROBE_ENABLED: z
+    .enum(["true", "false"])
+    .default("true")
+    .transform((v) => v === "true"),
+  /**
    * When true, API process polls due schedules and enqueues jobs.
    * Default: on in development, off in production.
    */

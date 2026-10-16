@@ -109,6 +109,7 @@ export * from "./public.js";
 export * from "./recovery-contract.js";
 export * from "./recovery-readiness.js";
 export * from "./recovery-points.js";
+export * from "./redis.js";
 export * from "./billing.js";
 
 /** Fleet health for dashboard — why someone opens the app on Tuesday */
