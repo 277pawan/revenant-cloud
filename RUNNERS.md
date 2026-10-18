@@ -32,7 +32,7 @@ See [revenant-agent/README.md](../revenant-agent/README.md).
 
 Edit revenant-cloud/packages/shared/src/plans.ts only:
 
-export const STARTER_TRIAL_DAYS = 30; // 1 month free
+export const STARTER_TRIAL_DAYS = 90; // 3 months free
 export const STARTER_PRICE_INR = 999;
 export const PRO_PRICE_INR = 4999;
 That drives:

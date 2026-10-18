@@ -14,7 +14,7 @@
 | **Developer (free)** — `revenant` CLI + GitHub Action | Zero cloud cost, proves the core value in CI. No account required. |
 | **Starter (cloud)** — **1 production workflow**, managed AWS restore drill | Revenant cloud runs the drill. **No agent tokens** (API-enforced). |
 | **Pro** — agent for **private Postgres only** | Agent claims **paid cloud jobs** — not a free CLI substitute. |
-| **30-day trial** on Starter signup | Try the control plane before Razorpay. No card at register. |
+| **90-day (3-month) trial** on Starter signup | Try the control plane before Razorpay. No card at register. |
 | **Sandbox concurrency limits** (1 Starter, 3 Pro) | Real limit = concurrent restores, not “10 agents.” |
 | **Evidence vault + schedules + email** on Starter | Enough for one critical DB team. |
 | **Proof Composer** (schema-aware YAML) | Differentiator for validation plans. |
@@ -53,7 +53,7 @@
 
 ### Starter — **₹999/mo** (cloud control plane)
 
-- **30-day trial** on register / OAuth org create (`trial_ends_at`, `subscription_status=trialing`).
+- **90-day (3-month) trial** on register / OAuth org create (`trial_ends_at`, `subscription_status=trialing`).
 - **1** database workflow, **1** schedule, **3** team members.
 - One restore drill at a time (same as one workflow — not a separate upsell).
 - **No self-hosted agent** (`selfHostedAgent: false` — tokens blocked in API).
@@ -181,6 +181,6 @@ The Docker image includes the CLI binary, but the agent **only works with a dash
 
 **Free path:** “Use the CLI or GitHub Action in your repo — no Revenant account.”
 
-**Cloud path:** “Sign up for a 30-day Starter trial. Add AWS keys, define a validation plan, run a managed restore drill. We spin up a sandbox, verify, tear down, and store evidence. No Docker on your side.”
+**Cloud path:** “Sign up for a 3-month Starter trial. Add AWS keys, define a validation plan, run a managed restore drill. We spin up a sandbox, verify, tear down, and store evidence. No Docker on your side.”
 
 **Pro path:** “Multiple databases, private Postgres, optional agent in your VPC, Slack alerts, longer evidence retention.”

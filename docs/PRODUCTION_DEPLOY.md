@@ -263,7 +263,7 @@ curl -s https://api.revenant.dev/api/v1/public/catalog | head
 
 In browser at `https://app.revenant.dev`:
 
-- [ ] Register with email → dashboard loads, trial banner shows 30 days
+- [ ] Register with email → dashboard loads, trial banner shows 90 days
 - [ ] Google login (popup) → lands on dashboard
 - [ ] GitHub login (popup) → lands on dashboard
 - [ ] Forgot password email arrives (SMTP)

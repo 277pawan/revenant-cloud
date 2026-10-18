@@ -19,13 +19,13 @@ This document is the **source of truth** for what is shipped, what is in progres
 
 | Item | Notes |
 |------|--------|
-| **Razorpay Starter billing** | ₹1 card check + ₹499/mo subscription after 30-day trial |
+| **Razorpay Starter billing** | ₹1 card check + ₹499/mo subscription after 3-month trial |
 | **Razorpay Pro plan IDs** | `RAZORPAY_PRO_PLAN_ID` + checkout picks plan from org |
 | **Pro upgrade & Pro signup** | Marketing pricing → register/bill as Pro |
 | **Fund us (one-time)** | `/coffee` — Razorpay order, no subscription plan |
 | **Website → cloud handoff** | Same JWT, `#token=` on `/auth/oauth/complete` |
 | **Autopay gate** | Cloud locked until ₹1 setup on marketing `/billing` |
-| **Trial logic** | 30 days from autopay completion (`organizations.trial_ends_at`) |
+| **Trial logic** | 90 days from autopay completion (`organizations.trial_ends_at`) |
 | **Production deploy** | Cloud Run CI/CD, Firebase frontends, live Razorpay keys |
 | **OAuth** | Google + GitHub on login/register |
 | **Password reset** | SMTP transactional email |
@@ -87,15 +87,15 @@ These are the **last items on the “launch-ready SaaS” track** before bigger 
 Reset trial or billing for QA — **`organizations`** table:
 
 ```sql
--- Reset 30-day trial
+-- Reset 90-day trial
 UPDATE organizations
-SET trial_ends_at = NOW() + INTERVAL '30 days',
+SET trial_ends_at = NOW() + INTERVAL '90 days',
     subscription_status = 'trialing'
 WHERE name = 'Your_Org';
 
 -- Full billing reset (re-test ₹1 checkout)
 UPDATE organizations
-SET trial_ends_at = NOW() + INTERVAL '30 days',
+SET trial_ends_at = NOW() + INTERVAL '90 days',
     subscription_status = 'trialing',
     razorpay_subscription_id = NULL,
     razorpay_subscription_status = NULL
@@ -343,7 +343,7 @@ flowchart LR
 
 | Time | User does | Revenant delivers |
 |------|-----------|-------------------|
-| 0–5 min | Lands on pricing, registers | 30-day trial messaging, no card at signup |
+| 0–5 min | Lands on pricing, registers | 3-month trial messaging, no card at signup |
 | 5–10 min | Pays ₹1 on `/billing` | Razorpay live, trial clock starts, cloud opens |
 | 10–25 min | Adds AWS RDS or sample workflow | Wizard + Proof Composer + templates |
 | 25–35 min | Runs first drill | Managed cloud runner, live run UI, RTO shown |
@@ -358,7 +358,7 @@ flowchart LR
 | Plan | Price | Trial | Limits |
 |------|-------|-------|--------|
 | **Developer** | Free | — | CLI + GitHub Action only |
-| **Starter** | ₹499/mo | 30 days after autopay | 1 workflow, managed AWS drill |
+| **Starter** | ₹499/mo | 90 days after autopay | 1 workflow, managed AWS drill |
 | **Pro** | ₹1,499/mo | — | 10 workflows, 3 parallel drills, agent optional |
 | **Enterprise** | Contact | Custom | SSO, unlimited (fair use) |
 

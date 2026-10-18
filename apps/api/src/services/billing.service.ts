@@ -88,7 +88,7 @@ export function createBillingService(db: Database, env: Env) {
     await db.update(organizations).set(patch).where(eq(organizations.id, organizationId));
   }
 
-  /** Full 30-day trial starts when autopay (₹1) completes — not at signup. */
+  /** Full Starter trial starts when autopay (₹1) completes — not at signup. */
   async function alignTrialAfterAutopaySetup(
     organizationId: string,
     razorpaySubscriptionId?: string | null
@@ -348,7 +348,7 @@ export function createBillingService(db: Database, env: Env) {
       }
     }
 
-    const trialEndsAt = org.trialEndsAt ?? new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+    const trialEndsAt = org.trialEndsAt ?? trialEndsAtFromNow();
     const startAtSec = Math.max(
       Math.floor(trialEndsAt.getTime() / 1000),
       Math.floor(Date.now() / 1000) + 600
@@ -579,7 +579,7 @@ export function createBillingService(db: Database, env: Env) {
         )
         .limit(1);
 
-      const trialEndsAt = org.trialEndsAt ?? new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+      const trialEndsAt = org.trialEndsAt ?? trialEndsAtFromNow();
       const amount = STARTER_AUTOPAY_SETUP_PAISE;
 
       if (pendingUpgrade?.razorpayOrderId) {
@@ -693,7 +693,7 @@ export function createBillingService(db: Database, env: Env) {
 
       const planDef = getPlanDefinition(billingPlan);
       const monthlyInr = recurringAmountInr(billingPlan);
-      const trialEndsAt = org.trialEndsAt ?? new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+      const trialEndsAt = org.trialEndsAt ?? trialEndsAtFromNow();
 
       if (org.razorpaySubscriptionId) {
         const resumed = await resolveExistingSubscriptionCheckout(

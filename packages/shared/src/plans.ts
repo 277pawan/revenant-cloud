@@ -30,7 +30,7 @@ export type PlanLimitResource =
 
 // ─── Pricing (edit amounts here only) ─────────────────────────────────────
 
-export const STARTER_TRIAL_DAYS = 30;
+export const STARTER_TRIAL_DAYS = 90;
 export const STARTER_PRICE_INR = 499;
 export const PRO_PRICE_INR = 1499;
 
@@ -171,7 +171,7 @@ export const PLAN_DEFINITIONS: Record<CatalogPlanId, PlanDefinition> = {
     audience: "cloud",
     trialDays: STARTER_TRIAL_DAYS,
     highlights: [
-      `${STARTER_TRIAL_DAYS}-day free trial, then ${STARTER_PRICE_LABEL}`,
+      `${STARTER_TRIAL_DAYS}-day (3-month) free trial, then ${STARTER_PRICE_LABEL}`,
       "1 production RDS workflow — managed AWS restore drill",
       "No Docker — Revenant cloud executes drills",
       "1 Redis instance — 4 restore proofs/mo, opt-in snapshots up to 24h",

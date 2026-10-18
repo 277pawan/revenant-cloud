@@ -7,7 +7,7 @@ Edit **one file** for backend + public API:
 `packages/shared/src/plans.ts`
 
 ```ts
-export const STARTER_TRIAL_DAYS = 30;
+export const STARTER_TRIAL_DAYS = 90;
 export const STARTER_PRICE_INR = 499;
 export const PRO_PRICE_INR = 1499;
 ```
@@ -26,9 +26,9 @@ Frontend pricing: update manually in `revenant-cloud-web` when you change amount
 
 | Event | What happens |
 |-------|----------------|
-| Register / OAuth new org | `plan=starter`, `subscription_status=trialing`, `trial_ends_at=now+30d` |
+| Register / OAuth new org | `plan=starter`, `subscription_status=trialing`, `trial_ends_at=now+90d` |
 | During trial | Full Starter features |
-| After 30 days (no Razorpay yet) | `assertSubscriptionActive` blocks new drills |
+| After 90 days (no Razorpay yet) | `assertSubscriptionActive` blocks new drills |
 | Razorpay (later) | Webhook sets `subscription_status=active` |
 
 ---
@@ -87,7 +87,7 @@ npm run dev
 
 ### 2. Plan + trial
 
-- [ ] Register → `GET /api/v1/billing/subscription` shows `trialing`, 30 days, `workflows: 0/1`
+- [ ] Register → `GET /api/v1/billing/subscription` shows `trialing`, 90 days, `workflows: 0/1`
 - [ ] `GET /api/v1/public/catalog` shows `priceInr: 499` and `1499` from shared file
 
 ### 3. Starter limits
@@ -147,5 +147,5 @@ Manually set `trial_ends_at` in DB to yesterday → run drill → `SUBSCRIPTION_
 Marketing site needs:
 
 - Static pricing (copy from catalog API or `plans.ts`)
-- CTA → `app.../register` (30-day trial, no payment)
+- CTA → `app.../register` (3-month trial, no payment)
 - Razorpay checkout (next sprint) → webhook activates `subscription_status`

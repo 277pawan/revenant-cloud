@@ -14,7 +14,7 @@ describe("plan-messages", () => {
       subscriptionStatus: "trialing",
       trialEndsAt: new Date("2020-01-01"),
     });
-    assert.match(msg, /30-day/);
+    assert.match(msg, /90-day/);
     assert.match(msg, /₹499/);
     assert.match(msg, /Developer CLI/);
   });

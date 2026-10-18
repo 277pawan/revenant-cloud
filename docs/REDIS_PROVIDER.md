@@ -91,6 +91,14 @@ an unbounded data-protection obligation.
 The free path is `revenant redis-prove` on the customer's own machine: no account, no
 agent, no cloud. Paid tiers sell *central retention and repeated proof*, never bytes.
 
+The local CLI proof is intentionally narrower than this managed provider: it accepts
+only a loopback source endpoint and requires the configured absolute RDB path to be
+readable on the CLI host. A forwarded container port is not sufficient unless the
+source RDB directory is mounted at that same host path. Remote and managed Redis
+RDB transfer is not implemented by the CLI; managed proofs use the separate runner
+workflow below. The CLI compares a bounded sample of the same keys, not the entire
+keyspace, and does not infer historical RPO from its proof-triggered `BGSAVE`.
+
 ## Architecture
 
 | Layer | File | Role |

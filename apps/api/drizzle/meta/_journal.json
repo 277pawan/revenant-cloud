@@ -204,6 +204,13 @@
       "when": 1792084000000,
       "tag": "0028_redis_artifact_compression",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1792225243331,
+      "tag": "0029_starter_trial_90_days",
+      "breakpoints": true
     }
   ]
 }
