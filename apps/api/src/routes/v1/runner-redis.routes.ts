@@ -35,19 +35,38 @@ export async function runnerRedisRoutes(
     "/runner/redis-proofs/claim",
     { preHandler: runnerAuth },
     async (_request, reply) => {
-      const claim = await claimNextRedisProof(deps.db, deps.masterKey);
+      // The agent is an executor, not a tenant: it gets the credentials it
+      // needs and nothing about the account that owns them. `organizationId`
+      // exists for the in-process cloud worker and is stripped here.
+      const claim = await claimNextRedisProof(deps.db, deps.masterKey, {
+        mode: "agent",
+        workerId: "agent",
+      });
       if (!claim) {
         return reply.status(204).send();
       }
       // NOTE: `redisUrl` is a live secret. It is returned here and nowhere
       // else, and the agent must never log it — redactRedisUrl exists for that.
-      return { claim };
+      const { organizationId: _organizationId, ...agentClaim } = claim;
+      return { claim: agentClaim };
     }
   );
 
   app.post(
     "/runner/redis-proofs/:id/complete",
-    { preHandler: runnerAuth },
+    {
+      preHandler: runnerAuth,
+      /**
+       * Fastify's default body limit is 1MB, which is smaller than almost
+       * every real RDB. The agent returns the captured dump as base64 in
+       * this body, so without a raised limit the snapshot-storage feature
+       * failed with "Payload Too Large" for every cache worth proving.
+       *
+       * The managed cloud worker never hits this limit: it runs the proof in
+       * this process and hands the bytes over as a Buffer.
+       */
+      bodyLimit: 32 * 1024 * 1024,
+    },
     async (request, reply) => {
       const params = proofIdParamSchema.safeParse(request.params);
       if (!params.success) {
@@ -85,6 +104,7 @@ export async function runnerRedisRoutes(
         restoreSeconds: result.restoreSeconds,
         rpoObservedSeconds: result.rpoObservedSeconds,
         rdbLastBgsaveStatus: result.rdbLastBgsaveStatus,
+        checks: result.checks,
         metadata: result.metadata,
         errorMessage: result.errorMessage,
         rdbBase64: result.rdbBase64,

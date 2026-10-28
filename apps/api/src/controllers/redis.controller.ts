@@ -21,12 +21,16 @@ import {
 import {
   assertProofQuota,
   getRedisProofOverview,
+  listRedisProofs,
+  listRedisSnapshots,
   startRedisProof,
   deleteRedisSnapshot,
 } from "../services/redis-snapshots.service.js";
 import {
   createRedisResourceSchema,
+  redisHistoryPageQuerySchema,
   redisIdParamSchema,
+  redisProofHistoryQuerySchema,
   redisSnapshotIdParamSchema,
   startRedisProofSchema,
   testRedisUrlSchema,
@@ -242,17 +246,100 @@ export function createRedisHandlers(deps: RedisHandlersDeps) {
       if (!params.success) {
         return reply.status(400).send({ error: "Invalid Redis id", code: "VALIDATION_ERROR" });
       }
+      const query = redisProofHistoryQuerySchema.safeParse(request.query);
+      if (!query.success) {
+        return reply.status(400).send({
+          error: "Invalid Redis history page",
+          code: "VALIDATION_ERROR",
+          details: query.error.flatten(),
+        });
+      }
       try {
         const overview = await getRedisProofOverview(
           db,
           request.user.organizationId,
-          params.data.id
+          params.data.id,
+          query.data
         );
-        // proofsUsedThisMonth is resolved server-side: the proofs list is
-        // capped at 50, so summing it in the client would undercount.
         return overview;
       } catch (err) {
         return sendHandlerError(err, request, reply, "Failed to list Redis proofs");
+      }
+    },
+
+    listProofHistory: async (request: FastifyRequest, reply: FastifyReply) => {
+      const params = redisIdParamSchema.safeParse(request.params);
+      const query = redisHistoryPageQuerySchema.safeParse(request.query);
+      if (!params.success) {
+        return reply.status(400).send({
+          error: "Invalid Redis proof history request",
+          code: "VALIDATION_ERROR",
+          details: params.error.flatten(),
+        });
+      }
+      if (!query.success) {
+        return reply.status(400).send({
+          error: "Invalid Redis proof history request",
+          code: "VALIDATION_ERROR",
+          details: query.error.flatten(),
+        });
+      }
+      try {
+        const page = await listRedisProofs(
+          db,
+          request.user.organizationId,
+          params.data.id,
+          query.data.offset,
+          query.data.limit,
+          query.data.search
+        );
+        return {
+          proofs: page.items,
+          hasMore: page.hasMore,
+          total: page.total,
+          offset: query.data.offset,
+          limit: query.data.limit,
+        };
+      } catch (err) {
+        return sendHandlerError(err, request, reply, "Failed to list Redis proof history");
+      }
+    },
+
+    listSnapshotHistory: async (request: FastifyRequest, reply: FastifyReply) => {
+      const params = redisIdParamSchema.safeParse(request.params);
+      const query = redisHistoryPageQuerySchema.safeParse(request.query);
+      if (!params.success) {
+        return reply.status(400).send({
+          error: "Invalid Redis snapshot history request",
+          code: "VALIDATION_ERROR",
+          details: params.error.flatten(),
+        });
+      }
+      if (!query.success) {
+        return reply.status(400).send({
+          error: "Invalid Redis snapshot history request",
+          code: "VALIDATION_ERROR",
+          details: query.error.flatten(),
+        });
+      }
+      try {
+        const page = await listRedisSnapshots(
+          db,
+          request.user.organizationId,
+          params.data.id,
+          query.data.offset,
+          query.data.limit,
+          query.data.search
+        );
+        return {
+          snapshots: page.items,
+          hasMore: page.hasMore,
+          total: page.total,
+          offset: query.data.offset,
+          limit: query.data.limit,
+        };
+      } catch (err) {
+        return sendHandlerError(err, request, reply, "Failed to list Redis snapshot history");
       }
     },
 

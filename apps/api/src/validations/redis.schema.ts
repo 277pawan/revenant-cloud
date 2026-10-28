@@ -47,6 +47,17 @@ export const updateRedisResourceSchema = z
 export const redisIdParamSchema = z.object({ id: z.string().uuid() });
 export const redisSnapshotIdParamSchema = z.object({ id: z.string().uuid() });
 
+export const redisProofHistoryQuerySchema = z.object({
+  proofOffset: z.coerce.number().int().min(0).max(1_000_000).default(0),
+  snapshotOffset: z.coerce.number().int().min(0).max(1_000_000).default(0),
+});
+
+export const redisHistoryPageQuerySchema = z.object({
+  offset: z.coerce.number().int().min(0).max(1_000_000).default(0),
+  limit: z.coerce.number().int().min(1).max(100).default(10),
+  search: z.string().trim().max(100).default(""),
+});
+
 /** Body for POST /redis/test — a URL that is NOT yet saved. */
 export const testRedisUrlSchema = z.object({
   url: redisUrlSchema,

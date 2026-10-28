@@ -62,6 +62,18 @@ export async function redisRoutes(app: FastifyInstance, handlers: RedisHandlers)
     handlers.listProofs
   );
 
+  app.get(
+    "/redis/:id/proofs/history",
+    { preHandler: requirePermission("databases:read") },
+    handlers.listProofHistory
+  );
+
+  app.get(
+    "/redis/:id/snapshots/history",
+    { preHandler: requirePermission("databases:read") },
+    handlers.listSnapshotHistory
+  );
+
   app.delete(
     "/redis/snapshots/:id",
     { preHandler: requirePermission("credentials:write") },

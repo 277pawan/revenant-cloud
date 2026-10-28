@@ -9,6 +9,17 @@ import { z } from "zod";
 
 export const completeRedisProofSchema = z.object({
   restored: z.boolean(),
+  checks: z
+    .array(
+      z.object({
+        name: z.string().min(1).max(100),
+        status: z.enum(["pass", "fail", "skip"]),
+        message: z.string().max(1000),
+        durationMs: z.number().int().nonnegative().max(30 * 60 * 1000),
+      })
+    )
+    .max(100)
+    .default([]),
   sourceKeyCount: z.number().int().nonnegative().nullable().default(null),
   restoredKeyCount: z.number().int().nonnegative().nullable().default(null),
   rdbBytes: z.number().int().nonnegative().nullable().default(null),

@@ -1,6 +1,6 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { isAppError } from "./errors.js";
-import { isMissingRelationError, migrationRequiredMessage } from "./pg-errors.js";
+import { isMissingDatabaseObjectError, migrationRequiredMessage } from "./pg-errors.js";
 
 /** Shared handler error response — function-based, no controller base class */
 export function sendHandlerError(
@@ -12,9 +12,9 @@ export function sendHandlerError(
   if (isAppError(err)) {
     return reply.status(err.statusCode).send({ error: err.message, code: err.code });
   }
-  if (isMissingRelationError(err)) {
-    const message = migrationRequiredMessage(fallback);
-    request.log.error({ err }, "Missing recovery readiness tables");
+  if (isMissingDatabaseObjectError(err)) {
+    const message = migrationRequiredMessage(fallback, err);
+    request.log.error({ err }, "Missing database object; required migration is not applied");
     return reply
       .status(503)
       .send({ error: message, code: "MIGRATION_REQUIRED" });

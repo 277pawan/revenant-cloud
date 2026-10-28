@@ -835,6 +835,30 @@ export const redisProofs = pgTable(
     }),
     /** pending | running | pass | fail | error */
     status: varchar("status", { length: 50 }).notNull().default("pending"),
+    /**
+     * How many times a proof has been claimed. 0 = never claimed.
+     * A proof that keeps getting released back to the queue is a proof no
+     * executor could reach — the UI needs to say so instead of spinning.
+     */
+    attempts: integer("attempts").notNull().default(0),
+    /**
+     * Which executor claimed it last: "cloud:<instance>" or "agent:<runnerId>".
+     * Answers "who is running this?" in the dashboard without a join.
+     */
+    claimedBy: varchar("claimed_by", { length: 120 }),
+    /**
+     * Why the last attempt was released back to the queue. Cleared when the
+     * proof reaches a terminal state — the terminal reason lives in
+     * errorMessage.
+     */
+    lastError: text("last_error"),
+    /** Machine-readable class of lastError: unreachable | auth | failed. */
+    lastErrorKind: varchar("last_error_kind", { length: 20 }),
+    /**
+     * Earliest time the cloud worker may retry this proof. Agents ignore it —
+     * an agent on the customer's network can usually reach what we cannot.
+     */
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }),
     /** Did the throwaway redis-server actually boot from the RDB? */
     restored: varchar("restored", { length: 10 }),
     sourceKeyCount: integer("source_key_count"),
@@ -845,6 +869,7 @@ export const redisProofs = pgTable(
     rdbLastBgsaveStatus: varchar("rdb_last_bgsave_status", { length: 50 }),
     errorMessage: text("error_message"),
     metadataJson: jsonb("metadata_json"),
+    checksJson: jsonb("checks_json"),
     startedAt: timestamp("started_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

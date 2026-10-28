@@ -112,7 +112,8 @@ keyspace, and does not infer historical RPO from its proof-triggered `BGSAVE`.
 | Sweeper | `apps/api/src/scheduler/redis-snapshot-sweep.ts` | 5-minute TTL enforcement loop |
 | User API | `apps/api/src/routes/v1/redis.routes.ts` | `/api/v1/redis/*` |
 | Runner API | `apps/api/src/routes/v1/runner-redis.routes.ts` | `/api/v1/runner/redis-proofs/*` |
-| Dashboard | `revenant-cloud-web/src/pages/RedisPage.tsx` | Add, test, run proof, inspect snapshots |
+| Dashboard | `revenant-cloud-web/src/pages/RedisPage.tsx`, `RedisHistoryPage.tsx`, `RedisGuidePage.tsx` | Add/test resources, recent activity, searchable paginated proof and snapshot history, user guide |
+| History API | `GET /redis/:id/proofs/history`, `GET /redis/:id/snapshots/history` | Search and page through all records |
 | CLI (free) | `revenant-cli/internal/redis/`, `cmd/redis_prove.go` | `redis-prove` — no Docker needed |
 | Agent (Docker) | `revenant-agent/src/redis-sandbox.ts`, `redis-proof-poll.ts` | Throwaway `redis-server` in a container |
 

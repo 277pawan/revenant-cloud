@@ -18,7 +18,20 @@
  * Restore proofs are recorded whether or not storage is enabled — running a
  * proof and keeping bytes are different decisions and stay in different tables.
  */
-import { and, count, desc, eq, isNotNull, isNull, lt, sql } from "drizzle-orm";
+import {
+  and,
+  count,
+  desc,
+  eq,
+  ilike,
+  isNotNull,
+  isNull,
+  lt,
+  lte,
+  ne,
+  or,
+  sql,
+} from "drizzle-orm";
 import { createHash } from "node:crypto";
 
 import {
@@ -223,7 +236,24 @@ export interface CompleteSnapshotInput {
   restoreSeconds: number | null;
   rpoObservedSeconds: number | null;
   rdbLastBgsaveStatus: string | null;
+  checks: Array<{
+    name: string;
+    status: "pass" | "fail" | "skip";
+    message: string;
+    durationMs: number;
+  }>;
   errorMessage?: string | null;
+  /**
+   * Explicit terminal state. When omitted it is derived from
+   * restored/errorMessage.
+   *
+   * The distinction is the whole point of the ledger: `fail` means the
+   * backup was tested and did not restore; `error` means the check could
+   * not be run at all (no route to the Redis, credentials rejected, the
+   * sandbox would not boot). Reporting a failed check as a failed BACKUP
+   * sends the customer hunting for a problem they do not have.
+   */
+  outcome?: "pass" | "fail" | "error";
 }
 
 /**
@@ -242,11 +272,9 @@ export async function completeRedisProof(
   const artifactStore = store ?? getArtifactStore(process.env as Record<string, string>);
   let storedBytes: number | null = null;
 
-  const proofStatus = input.errorMessage
-    ? "error"
-    : input.restored
-      ? "pass"
-      : "fail";
+  const proofStatus =
+    input.outcome ??
+    (input.errorMessage ? "error" : input.restored ? "pass" : "fail");
 
   if (input.snapshotId && input.storageKey && input.rdb && input.rdb.byteLength > 0) {
     try {
@@ -332,7 +360,15 @@ export async function completeRedisProof(
       rdbLastBgsaveStatus: input.rdbLastBgsaveStatus,
       errorMessage: input.errorMessage ?? null,
       metadataJson: input.metadata,
+      checksJson: input.checks,
       completedAt: now,
+      // The proof is terminal now: the executor state that described the
+      // WAIT is no longer true, and the terminal reason lives in
+      // errorMessage.
+      claimedBy: null,
+      lastError: null,
+      lastErrorKind: null,
+      nextAttemptAt: null,
       updatedAt: now,
     })
     .where(
@@ -348,37 +384,77 @@ export async function completeRedisProof(
 export async function listRedisSnapshots(
   db: Database,
   organizationId: string,
-  redisResourceId: string
+  redisResourceId: string,
+  offset = 0,
+  pageSize = 100,
+  search = ""
 ) {
-  return db
+  const searchFilter = search.trim()
+    ? or(
+        ilike(redisSnapshots.status, `%${search.trim()}%`),
+        sql`${redisSnapshots.id}::text ILIKE ${`%${search.trim()}%`}`
+      )
+    : undefined;
+  const where = and(
+    eq(redisSnapshots.organizationId, organizationId),
+    eq(redisSnapshots.redisResourceId, redisResourceId),
+    searchFilter
+  );
+  const [rows, [totalRow]] = await Promise.all([
+    db
     .select()
     .from(redisSnapshots)
-    .where(
-      and(
-        eq(redisSnapshots.organizationId, organizationId),
-        eq(redisSnapshots.redisResourceId, redisResourceId)
-      )
-    )
-    .orderBy(desc(redisSnapshots.createdAt))
-    .limit(100);
+    .where(where)
+    .orderBy(desc(redisSnapshots.createdAt), desc(redisSnapshots.id))
+    .limit(pageSize + 1)
+    .offset(offset),
+    db.select({ value: count() }).from(redisSnapshots).where(where),
+  ]);
+  return {
+    items: rows.slice(0, pageSize),
+    hasMore: rows.length > pageSize,
+    total: Number(totalRow?.value ?? 0),
+  };
 }
 
 export async function listRedisProofs(
   db: Database,
   organizationId: string,
-  redisResourceId: string
+  redisResourceId: string,
+  offset = 0,
+  pageSize = 50,
+  search = ""
 ) {
-  return db
+  const searchFilter = search.trim()
+    ? or(
+        ilike(redisProofs.status, `%${search.trim()}%`),
+        ilike(redisProofs.errorMessage, `%${search.trim()}%`),
+        sql`${redisProofs.id}::text ILIKE ${`%${search.trim()}%`}`
+      )
+    : undefined;
+  const where = and(
+    eq(redisProofs.organizationId, organizationId),
+    eq(redisProofs.redisResourceId, redisResourceId),
+    searchFilter
+  );
+  const [rows, [totalRow]] = await Promise.all([
+    db
     .select()
     .from(redisProofs)
-    .where(
-      and(
-        eq(redisProofs.organizationId, organizationId),
-        eq(redisProofs.redisResourceId, redisResourceId)
-      )
-    )
-    .orderBy(desc(redisProofs.createdAt))
-    .limit(50);
+    .where(where)
+    .orderBy(desc(redisProofs.createdAt), desc(redisProofs.id))
+    .limit(pageSize + 1)
+    .offset(offset),
+    db.select({ value: count() }).from(redisProofs).where(where),
+  ]);
+  return {
+    items: rows.slice(0, pageSize).map(({ checksJson, ...proof }) => ({
+      ...proof,
+      checks: Array.isArray(checksJson) ? checksJson : [],
+    })),
+    hasMore: rows.length > pageSize,
+    total: Number(totalRow?.value ?? 0),
+  };
 }
 
 /**
@@ -391,18 +467,27 @@ export async function listRedisProofs(
 export async function getRedisProofOverview(
   db: Database,
   organizationId: string,
-  redisResourceId: string
+  redisResourceId: string,
+  offsets: { proofOffset?: number; snapshotOffset?: number } = {}
 ): Promise<{
-  proofs: Awaited<ReturnType<typeof listRedisProofs>>;
-  snapshots: Awaited<ReturnType<typeof listRedisSnapshots>>;
+  proofs: Awaited<ReturnType<typeof listRedisProofs>>["items"];
+  snapshots: Awaited<ReturnType<typeof listRedisSnapshots>>["items"];
+  proofsHasMore: boolean;
+  snapshotsHasMore: boolean;
   proofsUsedThisMonth: number;
 }> {
   const [proofs, snapshots, proofsUsedThisMonth] = await Promise.all([
-    listRedisProofs(db, organizationId, redisResourceId),
-    listRedisSnapshots(db, organizationId, redisResourceId),
+    listRedisProofs(db, organizationId, redisResourceId, offsets.proofOffset),
+    listRedisSnapshots(db, organizationId, redisResourceId, offsets.snapshotOffset),
     countProofsThisMonth(db, organizationId),
   ]);
-  return { proofs, snapshots, proofsUsedThisMonth };
+  return {
+    proofs: proofs.items,
+    snapshots: snapshots.items,
+    proofsHasMore: proofs.hasMore,
+    snapshotsHasMore: snapshots.hasMore,
+    proofsUsedThisMonth,
+  };
 }
 
 /** Manual delete — customer-initiated or when storage is switched off. */
@@ -442,11 +527,35 @@ export async function deleteRedisSnapshot(
 
 // ─── Agent claim / complete ────────────────────────────────────────────────
 
-/** A proof is stuck if no agent picked it up in this long. */
+/**
+ * A proof is stuck if no executor picked it up in this long.
+ *
+ * Overridable because a customer bringing up a private-network agent may
+ * legitimately take longer than a managed proof takes.
+ */
 const PROOF_CLAIM_STALE_MS = 30 * 60 * 1000;
+
+function proofClaimStaleMs(): number {
+  const raw = Number(process.env.REDIS_PROOF_CLAIM_STALE_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : PROOF_CLAIM_STALE_MS;
+}
+
+/**
+ * How long a proof may sit in the queue before it is given up on.
+ *
+ * This is the ceiling, not the plan: the cloud worker normally claims a
+ * proof within seconds, and a proof that reaches this age is one no
+ * executor could take.
+ */
+function proofQueueTimeoutMs(): number {
+  const raw = Number(process.env.REDIS_PROOF_QUEUE_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : PROOF_CLAIM_STALE_MS;
+}
 
 export interface RedisProofClaim {
   proofId: string;
+  /** Owner of the proof. Never leaves the API process. */
+  organizationId: string;
   redisResourceId: string;
   resourceName: string;
   snapshotId: string | null;
@@ -461,8 +570,26 @@ export interface RedisProofClaim {
   redisUrl: string;
 }
 
+export interface RedisProofClaimOptions {
+  /**
+   * Which executor is asking.
+   *
+   * - "cloud" — Revenant's own worker. It honours `next_attempt_at` and
+   *   skips hosts it has already failed to reach, so it does not hammer a
+   *   Redis that lives inside a private network.
+   * - "agent" — a self-hosted agent. It ignores both, because an agent
+   *   running inside the customer's network can reach what the cloud
+   *   provably cannot.
+   */
+  mode: "cloud" | "agent";
+  /** Recorded on the proof so the dashboard can say who is running it. */
+  workerId?: string;
+  /** Fleet-wide cap on proofs running at once. 0 disables the check. */
+  maxInFlight?: number;
+}
+
 /**
- * Hand the oldest pending proof to an agent.
+ * Hand the oldest pending proof to an executor.
  *
  * QUERY BUDGET: 2 statements, and the idle path is one index-only scan of
  * `redis_proofs_pending_idx` (a near-empty partial index). It was 6 statements
@@ -479,15 +606,48 @@ export interface RedisProofClaim {
  */
 export async function claimNextRedisProof(
   db: Database,
-  masterKey: string
+  masterKey: string,
+  options: RedisProofClaimOptions = { mode: "agent" }
 ): Promise<RedisProofClaim | null> {
   const now = new Date();
+
+  // Fleet guard: every running proof holds a throwaway redis-server with its
+  // own memory ceiling, so the number of proofs in flight across the fleet
+  // has to be bounded. This is an index-only count of the running partial
+  // index, which is bounded by in-flight work rather than by history.
+  if (options.maxInFlight && options.maxInFlight > 0) {
+    const [inFlight] = await db
+      .select({ value: count() })
+      .from(redisProofs)
+      .where(eq(redisProofs.status, "running"));
+    if (Number(inFlight?.value ?? 0) >= options.maxInFlight) {
+      return null;
+    }
+  }
+
+  const cloudFilters =
+    options.mode === "cloud"
+      ? and(
+          or(
+            isNull(redisProofs.nextAttemptAt),
+            lte(redisProofs.nextAttemptAt, now)
+          ),
+          // A host we already failed to reach is not going to become
+          // reachable by trying again from the same place. Leave it for an
+          // executor inside the customer's network.
+          or(
+            isNull(redisProofs.lastErrorKind),
+            ne(redisProofs.lastErrorKind, "unreachable")
+          )
+        )
+      : undefined;
 
   // ONE query: claim the row and pull the whole payload in the same round
   // trip. Joins are covered by redis_proofs_join_idx + the PKs.
   const [claimed] = await db
     .select({
       proofId: redisProofs.id,
+      organizationId: redisProofs.organizationId,
       redisResourceId: redisProofs.redisResourceId,
       snapshotId: redisProofs.snapshotId,
       resourceName: redisResources.name,
@@ -505,7 +665,7 @@ export async function claimNextRedisProof(
       eq(redisCredentials.redisResourceId, redisProofs.redisResourceId)
     )
     .leftJoin(redisSnapshots, eq(redisSnapshots.id, redisProofs.snapshotId))
-    .where(eq(redisProofs.status, "pending"))
+    .where(and(eq(redisProofs.status, "pending"), cloudFilters))
     .orderBy(redisProofs.createdAt)
     .limit(1)
     .for("update", { of: redisProofs, skipLocked: true });
@@ -514,7 +674,13 @@ export async function claimNextRedisProof(
 
   await db
     .update(redisProofs)
-    .set({ status: "running", startedAt: now, updatedAt: now })
+    .set({
+      status: "running",
+      startedAt: now,
+      updatedAt: now,
+      attempts: sql`${redisProofs.attempts} + 1`,
+      claimedBy: options.workerId ?? null,
+    })
     .where(eq(redisProofs.id, claimed.proofId));
 
   let redisUrl: string;
@@ -529,7 +695,7 @@ export async function claimNextRedisProof(
     );
   } catch {
     // A failed decrypt is unrecoverable for this proof — close it instead of
-    // crashing the agent's poll loop.
+    // crashing the executor's poll loop.
     await db
       .update(redisProofs)
       .set({
@@ -547,6 +713,7 @@ export async function claimNextRedisProof(
 
   return {
     proofId: claimed.proofId,
+    organizationId: claimed.organizationId,
     redisResourceId: claimed.redisResourceId,
     resourceName: claimed.resourceName,
     snapshotId: captureRdb ? claimed.snapshotId : null,
@@ -555,6 +722,47 @@ export async function claimNextRedisProof(
     expiresAt: claimed.expiresAt?.toISOString() ?? null,
     redisUrl,
   };
+}
+
+/**
+ * Hand a claimed proof back to the queue.
+ *
+ * This is the difference between "stuck" and "waiting". A proof is released
+ * when the failure was NOT about the backup — the executor simply could not
+ * reach the customer's Redis. Failing it would be a lie: we never got to
+ * test the backup at all.
+ *
+ * The proof goes back to `pending` with the reason attached, so:
+ *   - the cloud worker skips it (it has already proven it cannot reach that
+ *     host) and leaves it for an agent inside the customer's network,
+ *   - the dashboard can say WHY it is still waiting,
+ *   - the sweeper eventually gives up with a message that names the cause.
+ */
+export async function releaseRedisProof(
+  db: Database,
+  proofId: string,
+  input: {
+    errorMessage: string;
+    /** unreachable | auth | failed — decides who may pick it up next. */
+    kind: "unreachable" | "auth" | "failed";
+    /** Earliest time the cloud worker may try again. */
+    nextAttemptAt?: Date | null;
+  }
+): Promise<void> {
+  const now = new Date();
+  await db
+    .update(redisProofs)
+    .set({
+      status: "pending",
+      startedAt: null,
+      completedAt: null,
+      claimedBy: null,
+      lastError: input.errorMessage,
+      lastErrorKind: input.kind,
+      nextAttemptAt: input.nextAttemptAt ?? null,
+      updatedAt: now,
+    })
+    .where(eq(redisProofs.id, proofId));
 }
 
 /**
@@ -567,15 +775,19 @@ export async function claimNextRedisProof(
  * set the moment a proof is claimed, so filtering on it directly is both
  * correct and indexable via `redis_proofs_running_idx`.
  *
- * Without this, an agent dying mid-drill would leave a proof "running" forever,
- * burning the customer's monthly quota with nothing to show for it.
+ * Without this, an executor dying mid-drill would leave a proof "running"
+ * forever, burning the customer's monthly quota with nothing to show for it.
  */
 export async function reclaimStaleRedisProofs(db: Database): Promise<number> {
-  const staleBefore = new Date(Date.now() - PROOF_CLAIM_STALE_MS);
+  const staleMs = proofClaimStaleMs();
+  const staleBefore = new Date(Date.now() - staleMs);
+  const queueMs = proofQueueTimeoutMs();
+  const queueCutoff = new Date(Date.now() - queueMs);
+  const now = new Date();
 
   const reclaimed = await db
     .update(redisProofs)
-    .set({ status: "pending", updatedAt: new Date() })
+    .set({ status: "pending", startedAt: null, claimedBy: null, updatedAt: now })
     .where(
       and(
         eq(redisProofs.status, "running"),
@@ -585,7 +797,49 @@ export async function reclaimStaleRedisProofs(db: Database): Promise<number> {
     )
     .returning({ id: redisProofs.id });
 
-  return reclaimed.length;
+  // A proof nobody claimed. The message has to name the CAUSE, because
+  // "no worker claimed this" was the single most confusing thing this
+  // product could say to a customer who had done nothing wrong.
+  const queueMinutes = Math.round(queueMs / 60000);
+  const unreachable = await db
+    .update(redisProofs)
+    .set({
+      status: "error",
+      errorMessage:
+        `Revenant's cloud runner could not reach this Redis, and no agent claimed the run within ${queueMinutes} minutes. ` +
+        `If the Redis is on a private network, deploy the Revenant agent inside that network and run the proof again.`,
+      completedAt: now,
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(redisProofs.status, "pending"),
+        eq(redisProofs.lastErrorKind, "unreachable"),
+        lt(redisProofs.updatedAt, queueCutoff)
+      )
+    )
+    .returning({ id: redisProofs.id });
+
+  const unclaimed = await db
+    .update(redisProofs)
+    .set({
+      status: "error",
+      errorMessage:
+        `No proof executor claimed this run within ${queueMinutes} minutes. ` +
+        `Revenant's cloud runner was unable to run it — check that this Redis is reachable from the cloud, then create a new proof.`,
+      completedAt: now,
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(redisProofs.status, "pending"),
+        isNull(redisProofs.lastErrorKind),
+        lt(redisProofs.updatedAt, queueCutoff)
+      )
+    )
+    .returning({ id: redisProofs.id });
+
+  return reclaimed.length + unreachable.length + unclaimed.length;
 }
 
 export interface RedisProofCompletion {
@@ -596,11 +850,28 @@ export interface RedisProofCompletion {
   restoreSeconds: number | null;
   rpoObservedSeconds: number | null;
   rdbLastBgsaveStatus: string | null;
-  /** Digests/metadata from the agent. Must contain no raw keys or values. */
+  checks: Array<{
+    name: string;
+    status: "pass" | "fail" | "skip";
+    message: string;
+    durationMs: number;
+  }>;
+  /** Digests/metadata from the executor. Must contain no raw keys or values. */
   metadata: RedisFingerprint | null;
   errorMessage?: string | null;
   /** base64 RDB, sent only when the claim asked for captureRdb */
   rdbBase64?: string | null;
+  /**
+   * Raw RDB bytes for an IN-PROCESS executor.
+   *
+   * The cloud worker runs the proof inside this process, so the bytes never
+   * need to be encoded into a JSON body and decoded again — which is what
+   * made the agent path fall over on anything but a tiny RDB (Fastify's
+   * default body limit is 1MB).
+   */
+  rdb?: Buffer | null;
+  /** Explicit terminal state — see CompleteSnapshotInput.outcome. */
+  outcome?: "pass" | "fail" | "error";
 }
 
 /** Agent-reported result → close the proof and, if enabled, store the artifact. */
@@ -625,7 +896,16 @@ export async function completeRedisProofRun(
   if (!proof) throw createAppError(404, "Proof not found", "NOT_FOUND");
 
   let rdb: Buffer | null = null;
-  if (input.rdbBase64) {
+  if (input.rdb && input.rdb.byteLength > 0) {
+    if (input.rdb.byteLength > MAX_RDB_BYTES) {
+      throw createAppError(
+        413,
+        `Snapshot exceeds the ${Math.round(MAX_RDB_BYTES / 1024 / 1024)}MB limit`,
+        "SNAPSHOT_TOO_LARGE"
+      );
+    }
+    rdb = input.rdb;
+  } else if (input.rdbBase64) {
     // Refuse anything implausible for an RDB before it reaches disk.
     const buffer = Buffer.from(input.rdbBase64, "base64");
     if (buffer.byteLength > MAX_RDB_BYTES) {
@@ -672,7 +952,9 @@ export async function completeRedisProofRun(
       restoreSeconds: input.restoreSeconds,
       rpoObservedSeconds: input.rpoObservedSeconds,
       rdbLastBgsaveStatus: input.rdbLastBgsaveStatus,
+      checks: input.checks,
       errorMessage: input.errorMessage ?? null,
+      outcome: input.outcome,
     },
     store
   );

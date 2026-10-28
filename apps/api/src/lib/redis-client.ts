@@ -39,7 +39,7 @@ export class RespError extends Error {
   }
 }
 
-function bufToText(value: RespValue | undefined): string {
+export function bufToText(value: RespValue | undefined): string {
   if (value == null) return "";
   if (Buffer.isBuffer(value)) return value.toString("utf8");
   if (typeof value === "number") return String(value);
@@ -163,16 +163,28 @@ export class RedisProbe {
 
     try {
       // Redis 6+ prefers ACL AUTH <user> <pass>; Redis 5 and older only
-      // accept AUTH <pass>. Try the modern form, fall back on failure.
+      // accept AUTH <pass>.
+      //
+      // The command must be chosen up front: sending "AUTH undefined pass"
+      // used to throw inside the encoder, which left a waiter in the queue
+      // that no reply could ever satisfy — the next real reply satisfied
+      // that stale waiter and the connection deadlocked on the reply after
+      // it. Every password-protected Redis hit this path, so an authenticated
+      // Redis never answered the API at all.
       if (opts.password) {
-        try {
-          await probe.send("AUTH", opts.username as string, opts.password);
-        } catch {
-          await probe.send("AUTH", opts.password);
+        const reply = opts.username
+          ? await probe.send("AUTH", opts.username, opts.password)
+          : await probe.send("AUTH", opts.password);
+        if (reply instanceof RespError) {
+          // The ACL form was rejected. Older servers only speak AUTH <pass>.
+          if (!opts.username) throw reply;
+          const fallback = await probe.send("AUTH", opts.password);
+          if (fallback instanceof RespError) throw fallback;
         }
       } else if (opts.username) {
         // ACL user without a password — still needs the ACL form.
-        await probe.send("AUTH", opts.username, "");
+        const reply = await probe.send("AUTH", opts.username, "");
+        if (reply instanceof RespError) throw reply;
       }
       const db = opts.dbIndex ?? 0;
       if (db > 0) await probe.send("SELECT", String(db));
@@ -225,9 +237,21 @@ export class RedisProbe {
 
   send(...args: string[]): Promise<RespValue> {
     if (this.closed) return Promise.reject(new Error("Redis connection closed"));
+    // Encode BEFORE queueing the waiter. If encoding throws (an undefined
+    // argument, for instance), the promise must reject on its own — a waiter
+    // left in the queue would be satisfied by the NEXT command's reply and
+    // every reply after that would be off by one.
+    let payload: Buffer;
+    try {
+      payload = encodeCommand(args);
+    } catch (err) {
+      return Promise.reject(
+        err instanceof Error ? err : new Error(String(err))
+      );
+    }
     return new Promise<RespValue>((resolve, reject) => {
       this.pending.push({ resolve, reject });
-      this.socket.write(encodeCommand(args), (err) => {
+      this.socket.write(payload, (err) => {
         if (err) {
           this.closed = true;
           reject(err);
@@ -272,13 +296,20 @@ export function parseInfo(raw: string): Record<string, string> {
 
 /**
  * Parse the `keyspace` section: "db0:keys=42,expires=7,avg_ttl=0".
+ *
+ * `INFO keyspace` answers with a section header ("# Keyspace") followed by
+ * one line per database. The lines do NOT have the "key:value" shape that
+ * `parseInfo` expects — they have a "db0:keys=..." shape — so they have to
+ * be parsed on their own. Reading them through `parseInfo` produced
+ * `{ db0: "keys=42,expires=7" }` and an empty keyspace, which is why every
+ * fingerprint Revenant produced reported zero keys.
  */
-export function parseKeyspace(info: Record<string, string>): RedisFingerprint["keyspace"] {
+export function parseKeyspace(raw: string): RedisFingerprint["keyspace"] {
   const out: RedisFingerprint["keyspace"] = {};
-  const raw = info.keyspace;
-  if (!raw) return out;
-  for (const entry of raw.split(/\r?\n/)) {
-    const m = /^db(\d+):keys=(\d+),expires=(\d+)(?:,avg_ttl=(\d+))?$/.exec(entry.trim());
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const m = /^db(\d+):keys=(\d+),expires=(\d+)(?:,avg_ttl=(\d+))?$/.exec(trimmed);
     if (!m) continue;
     out[`db${m[1]}`] = {
       keys: Number(m[2]),
@@ -309,7 +340,8 @@ export async function fingerprintRedis(
 ): Promise<RedisFingerprint> {
   const info = parseInfo(bufToText(await client.send("INFO", "server")));
   const persistence = parseInfo(bufToText(await client.send("INFO", "persistence")));
-  const keyspace = parseKeyspace(parseInfo(bufToText(await client.send("INFO", "keyspace"))));
+  // `INFO keyspace` is parsed on its own — its lines are not "key:value".
+  const keyspace = parseKeyspace(bufToText(await client.send("INFO", "keyspace")));
 
   const configReply = await client.send("CONFIG", "GET", "maxmemory-policy", "maxmemory", "appendonly", "save", "requirepass");
   const config = configToMap(configReply);
@@ -350,7 +382,7 @@ export async function fingerprintRedis(
 }
 
 /** CONFIG GET returns a flat [k, v, k, v] array. */
-function configToMap(reply: RespValue): Record<string, string> {
+export function configToMap(reply: RespValue): Record<string, string> {
   const out: Record<string, string> = {};
   if (!Array.isArray(reply)) return out;
   for (let i = 0; i + 1 < reply.length; i += 2) {

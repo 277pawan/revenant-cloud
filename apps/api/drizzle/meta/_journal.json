@@ -211,6 +211,20 @@
       "when": 1792225243331,
       "tag": "0029_starter_trial_90_days",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1793226000000,
+      "tag": "0030_redis_proof_checks",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1794000000000,
+      "tag": "0031_redis_proof_executor_state",
+      "breakpoints": true
     }
   ]
 }

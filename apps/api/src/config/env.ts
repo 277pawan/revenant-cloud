@@ -112,6 +112,45 @@ const envSchema = z.object({
     .default("true")
     .transform((v) => v === "true"),
   /**
+   * Managed Redis proof worker.
+   *
+   * When on, the API claims its own Redis restore proofs and runs them in
+   * this process — the "managed cloud runner" model the product already
+   * uses for Postgres drills. This is what makes a proof work without the
+   * customer deploying an always-on agent.
+   *
+   * "auto" is ON: the worker is the default executor. Turn it off only when
+   * every Redis you care about lives in a private network and is served by
+   * self-hosted agents.
+   */
+  REDIS_PROOF_WORKER_ENABLED: z
+    .enum(["true", "false", "auto"])
+    .default("auto")
+    .transform((v) => v === "true" || v === "auto"),
+  /** Redis proofs this API instance may run at once. */
+  REDIS_PROOF_WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(8).default(1),
+  /** Poll interval when the proof queue has work. */
+  REDIS_PROOF_POLL_MS: z.coerce.number().int().min(1000).default(5_000),
+  /** Poll interval ceiling when the queue is empty. */
+  REDIS_PROOF_MAX_IDLE_MS: z.coerce.number().int().min(5_000).default(60_000),
+  /**
+   * Fleet-wide cap on Redis proofs running at once.
+   *
+   * Each running proof holds a throwaway redis-server with its own memory
+   * ceiling, so the number in flight across the fleet has to be bounded or a
+   * burst of proofs can take the cluster down with it. 0 disables the check.
+   */
+  REDIS_PROOF_MAX_INFLIGHT: z.coerce.number().int().min(0).default(25),
+  /** Keys sampled for the keyspace digest. */
+  REDIS_PROOF_SAMPLE_SIZE: z.coerce.number().int().min(1).max(500).default(25),
+  /** Memory ceiling for each throwaway redis-server. */
+  REDIS_PROOF_MAX_MEMORY: z.string().default("512mb"),
+  /** Budget for RDB pull + sandbox boot + inspection. */
+  REDIS_PROOF_TIMEOUT_MS: z.coerce.number().int().min(10_000).default(120_000),
+  /** redis-server / redis-cli binaries used to run the proof sandbox. */
+  REDIS_PROOF_SERVER_BIN: z.string().default("redis-server"),
+  REDIS_PROOF_CLI_BIN: z.string().default("redis-cli"),
+  /**
    * When true, API process polls due schedules and enqueues jobs.
    * Default: on in development, off in production.
    */

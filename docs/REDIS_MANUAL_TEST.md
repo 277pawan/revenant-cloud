@@ -365,16 +365,16 @@ npm run dev                           # http://localhost:5173
 
 Log in, then open **Infrastructure → Redis**.
 
-### 12.1 The free-plan gate
+### 12.1 The plan gate
 
 ```sql
 -- force the org onto the CLI-only Developer-equivalent state
 UPDATE organizations SET plan = 'developer' WHERE name = 'Your_Org';
 ```
 
-Reload. **PASS:** the page shows *"Redis proofs run from the CLI on the free
-plan"* with the `revenant redis-prove --url …` command, and **no** "Add Redis"
-button. Reset the plan afterwards.
+Reload. **PASS:** the page explains that Redis proofs require Starter or Pro and
+links to plan and billing. It does not show a local CLI command, Docker example,
+or a create button. Reset the plan afterwards.
 
 ### 12.2 Add a Redis — the whole flow in one screen
 
@@ -399,14 +399,36 @@ redis-cli dbsize      # expect 3
 
 Re-test and confirm **Keys = 3** and `Keys with expiry = 1`.
 
-### 12.3 Unreachable Redis must be amber, not red
+### 12.3 Edit without replacing the secret, then run a proof
+
+1. Save the resource, click its edit action, change only its name, and click
+   **Save changes** with the Redis URL left blank.
+
+**PASS:** the edit saves and the existing Redis connection still works. The URL is
+optional on edit because credentials are never returned to the browser.
+
+2. With snapshot storage enabled, open edit.
+
+**PASS:** the form does not offer a retention/expiry input. Each snapshot keeps the
+expiry it received when captured; editing the resource does not rewrite existing
+snapshot deadlines.
+
+3. Close edit, select the Redis, and click **Create & run restore proof** (or
+   **Create proof** in that Redis row).
+
+**PASS:** a proof row appears as **Pending** until an online Redis proof worker claims
+it, then changes to its result. The dashboard creates and queues the proof; no proof
+file, command, or validation script is required from the user. If no worker claims
+the proof within 30 minutes, it changes to **Error** with an actionable message.
+
+### 12.4 Unreachable Redis must be amber, not red
 
 Paste `redis://10.255.255.1:6379` and test.
 
 **PASS:** amber *"Not reachable from Revenant"* with the CLI/agent advice.
 **FAIL if** it shows a raw socket error — the message should be actionable.
 
-### 12.4 The TTL clamp, visible in the UI
+### 12.5 The TTL clamp, visible in the UI
 
 Tick **Keep a compressed snapshot in Revenant storage**, set retention to
 **7 days**.
@@ -417,17 +439,19 @@ confirm the list row shows **24 hours**, not 7 days.
 
 > This is the UI half of the clamp. The API half is test #7. Both must agree.
 
-### 12.5 Proof quota surfaced
+### 12.6 Proof quota surfaced
 
 Starter allows 4/month, and the card should read **"4 proofs/month"** above the
 list.
 
-### 12.6 Run a proof end to end
+### 12.7 Run a proof end to end
 
-Leave snapshot storage **on** for `cache-prod`, then click **Run restore proof**.
+Leave snapshot storage **on** for `cache-prod`, then click **Run proof**.
 
-**PASS:** toast *"Restore proof queued"* with an expiry timestamp ~24 h out,
-and the proof moves to `running`.
+**PASS:** the toast says **"Proof created"** and points to the status below. The
+proof appears as `pending` until an online worker claims it. Snapshot expiry is
+shown in Snapshot history, not in the proof toast. While a proof is pending, the
+UI explains that the RDB has not been captured yet.
 
 Start the agent so it can claim it:
 
@@ -445,16 +469,17 @@ REVENANT_RUNNER_TOKEN=$RUNNER_TOKEN npm start
 [...-redis] completed proof <id>
 ```
 
-Back in the UI, switch to the **Proofs** tab.
+Back in the UI, choose **Search and view all proofs**.
 
 **PASS:** the newest row reads **Restored**, `3 / 3` keys, a non-empty RTO and
-RPO. Switch to **Snapshots**.
+RPO. Search and pagination work, with 10 records per page. Choose **Snapshot
+history**.
 
 **PASS:** one row, status **Stored**, size > 0, and a live
-`expires in 23h 59m` countdown. The fingerprint card now shows Keys = 3 and a
+`expires in 23h 59m` countdown. Search and pagination work there too. The fingerprint card now shows Keys = 3 and a
 keyspace digest.
 
-### 12.7 TTL expiry in the UI
+### 12.8 TTL expiry in the UI
 
 Let the countdown lapse (or shorten it in SQL, then wait one sweep):
 
@@ -462,7 +487,7 @@ Let the countdown lapse (or shorten it in SQL, then wait one sweep):
 column goes to `—`. Click **refresh** — it should *not* disappear, because
 seeing "expired" is how a customer learns the TTL is real.
 
-### 12.8 Delete a snapshot from the UI
+### 12.9 Delete a snapshot from the UI
 
 Click the bin icon on a **Stored** row.
 
