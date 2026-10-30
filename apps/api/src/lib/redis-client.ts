@@ -50,10 +50,17 @@ export function bufToText(value: RespValue | undefined): string {
 
 // ─── Encoder ────────────────────────────────────────────────────────────────
 
-function encodeCommand(args: readonly string[]): Buffer {
+/**
+ * Encode a command.
+ *
+ * Arguments may be Buffers: the logical restore path sends DUMP payloads
+ * back to a server with RESTORE, and those payloads are binary. Encoding
+ * them as UTF-8 would corrupt every value that is not valid UTF-8.
+ */
+function encodeCommand(args: readonly (string | Buffer)[]): Buffer {
   const parts: Buffer[] = [Buffer.from(`*${args.length}\r\n`, "utf8")];
   for (const arg of args) {
-    const buf = Buffer.from(arg, "utf8");
+    const buf = Buffer.isBuffer(arg) ? arg : Buffer.from(arg, "utf8");
     parts.push(Buffer.from(`$${buf.length}\r\n`, "utf8"));
     parts.push(buf, Buffer.from("\r\n", "utf8"));
   }
@@ -235,7 +242,7 @@ export class RedisProbe {
     });
   }
 
-  send(...args: string[]): Promise<RespValue> {
+  send(...args: Array<string | Buffer>): Promise<RespValue> {
     if (this.closed) return Promise.reject(new Error("Redis connection closed"));
     // Encode BEFORE queueing the waiter. If encoding throws (an undefined
     // argument, for instance), the promise must reject on its own — a waiter

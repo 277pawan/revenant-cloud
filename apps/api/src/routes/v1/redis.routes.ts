@@ -79,4 +79,17 @@ export async function redisRoutes(app: FastifyInstance, handlers: RedisHandlers)
     { preHandler: requirePermission("credentials:write") },
     handlers.deleteSnapshot
   );
+
+  /**
+   * Download the stored artifact of a snapshot.
+   *
+   * Read permission, not write: downloading bytes the customer already owns
+   * is a read. The endpoint only serves snapshots in the `stored` state, so
+   * a failed capture explains itself instead of returning a broken file.
+   */
+  app.get(
+    "/redis/snapshots/:id/artifact",
+    { preHandler: requirePermission("databases:read") },
+    handlers.downloadSnapshotArtifact
+  );
 }

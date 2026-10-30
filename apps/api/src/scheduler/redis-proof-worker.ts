@@ -179,6 +179,17 @@ export async function executeRedisProofClaim(
   const restored = result.restored;
   const errorMessage = restored ? null : firstMessage;
 
+  // The verdict is not binary. `fail` means the backup was tested and did
+  // not come back. `error` means the check could not be run — no sandbox,
+  // version skew, credentials refused. Reporting a failed CHECK as a failed
+  // BACKUP sends the customer hunting for a problem they do not have.
+  const outcome: "pass" | "fail" | "error" =
+    result.outcome === "restored"
+      ? "pass"
+      : result.outcome === "failed"
+        ? "fail"
+        : "error";
+
   await completeRedisProofRun(db, claim.organizationId, claim.proofId, {
     restored,
     checks: result.checks,
@@ -191,10 +202,7 @@ export async function executeRedisProofClaim(
     metadata: toFingerprint(result, buildRestoredKeyspace(result)),
     errorMessage,
     rdb: result.rdb ?? null,
-    // A proof that RAN and found a bad backup is a `fail`. A proof that
-    // could not run is an `error`. Conflating them sends customers hunting
-    // for a backup problem they do not have.
-    outcome: restored ? "pass" : "fail",
+    outcome,
   });
 
   return "completed";

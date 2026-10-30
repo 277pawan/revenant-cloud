@@ -25,6 +25,7 @@ import {
   listRedisSnapshots,
   startRedisProof,
   deleteRedisSnapshot,
+  readRedisSnapshotArtifact,
 } from "../services/redis-snapshots.service.js";
 import {
   createRedisResourceSchema,
@@ -355,6 +356,43 @@ export function createRedisHandlers(deps: RedisHandlersDeps) {
         return reply.status(204).send();
       } catch (err) {
         return sendHandlerError(err, request, reply, "Failed to delete Redis snapshot");
+      }
+    },
+
+    /**
+     * Download a stored snapshot artifact.
+     *
+     * The customer gets the exact bytes Revenant captured, so a restore can
+     * be proved on their own redis-server without trusting this product.
+     */
+    downloadSnapshotArtifact: async (request: FastifyRequest, reply: FastifyReply) => {
+      const params = redisSnapshotIdParamSchema.safeParse(request.params);
+      if (!params.success) {
+        return reply
+          .status(400)
+          .send({ error: "Invalid snapshot id", code: "VALIDATION_ERROR" });
+      }
+      try {
+        const artifact = await readRedisSnapshotArtifact(
+          db,
+          request.user.organizationId,
+          params.data.id
+        );
+        return reply
+          .header(
+            "Content-Disposition",
+            `attachment; filename="${artifact.fileName}"`
+          )
+          .header("Content-Type", "application/octet-stream")
+          .header("X-Revenant-Checksum-Sha256", artifact.checksumSha256 ?? "")
+          .send(artifact.bytes);
+      } catch (err) {
+        return sendHandlerError(
+          err,
+          request,
+          reply,
+          "Failed to download Redis snapshot artifact"
+        );
       }
     },
   };

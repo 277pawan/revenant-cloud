@@ -50,6 +50,7 @@ import {
   buildRedisArtifactKey,
   encodeArtifact,
   decodeArtifact,
+  artifactExtension,
   resolveRedisArtifactCompression,
   type ArtifactStore,
   type RedisArtifactCompression,
@@ -364,8 +365,8 @@ export async function completeRedisProof(
       completedAt: now,
       // The proof is terminal now: the executor state that described the
       // WAIT is no longer true, and the terminal reason lives in
-      // errorMessage.
-      claimedBy: null,
+      // errorMessage. `claimedBy` is KEPT — it records who ran the proof,
+      // which is what the dashboard shows next to the result.
       lastError: null,
       lastErrorKind: null,
       nextAttemptAt: null,
@@ -523,6 +524,75 @@ export async function deleteRedisSnapshot(
         eq(redisSnapshots.organizationId, organizationId)
       )
     );
+}
+
+/**
+ * Read back a stored snapshot artifact.
+ *
+ * This is the "restore" half of a stored snapshot: the customer gets the
+ * exact bytes Revenant captured, so they can load them into their own
+ * redis-server and prove the artifact is usable without trusting us.
+ *
+ * Only a snapshot that is actually stored can be read — a failed capture has
+ * no bytes, and an expired one has already been deleted.
+ */
+export async function readRedisSnapshotArtifact(
+  db: Database,
+  organizationId: string,
+  snapshotId: string,
+  store?: ArtifactStore
+): Promise<{ bytes: Buffer; checksumSha256: string | null; fileName: string }> {
+  const [row] = await db
+    .select({
+      status: redisSnapshots.status,
+      storageKey: redisSnapshots.storageKey,
+      checksumSha256: redisSnapshots.checksumSha256,
+      compression: redisSnapshots.compression,
+      deletedAt: redisSnapshots.deletedAt,
+    })
+    .from(redisSnapshots)
+    .where(
+      and(
+        eq(redisSnapshots.id, snapshotId),
+        eq(redisSnapshots.organizationId, organizationId)
+      )
+    )
+    .limit(1);
+  if (!row) throw createAppError(404, "Snapshot not found", "NOT_FOUND");
+
+  if (row.status !== "stored" || !row.storageKey) {
+    throw createAppError(
+      409,
+      row.status === "failed"
+        ? "This snapshot failed to store, so there are no bytes to download. The failure reason is shown on the snapshot."
+        : `This snapshot is ${row.status} and has no stored artifact.`,
+      "SNAPSHOT_NOT_STORED"
+    );
+  }
+
+  const artifactStore = store ?? getArtifactStore(process.env as Record<string, string>);
+  let raw: Buffer;
+  try {
+    raw = await artifactStore.get(row.storageKey);
+  } catch {
+    throw createAppError(
+      409,
+      "The stored artifact could not be read. It may have been deleted by the retention sweeper.",
+      "SNAPSHOT_ARTIFACT_UNAVAILABLE"
+    );
+  }
+
+  // Artifacts are stored compressed. The customer gets the real RDB, with
+  // the extension that says so — handing them a gzip stream named ".rdb"
+  // would produce a file redis-server cannot load.
+  const compression = (row.compression ?? "none") as RedisArtifactCompression;
+  const bytes = decodeArtifact(raw, compression);
+
+  return {
+    bytes,
+    checksumSha256: row.checksumSha256,
+    fileName: `revenant-redis-${snapshotId}${artifactExtension(compression)}`,
+  };
 }
 
 // ─── Agent claim / complete ────────────────────────────────────────────────

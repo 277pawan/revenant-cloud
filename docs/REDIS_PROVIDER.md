@@ -115,9 +115,30 @@ keyspace, and does not infer historical RPO from its proof-triggered `BGSAVE`.
 | Dashboard | `revenant-cloud-web/src/pages/RedisPage.tsx`, `RedisHistoryPage.tsx`, `RedisGuidePage.tsx` | Add/test resources, recent activity, searchable paginated proof and snapshot history, user guide |
 | History API | `GET /redis/:id/proofs/history`, `GET /redis/:id/snapshots/history` | Search and page through all records |
 | CLI (free) | `revenant-cli/internal/redis/`, `cmd/redis_prove.go` | `redis-prove` — no Docker needed |
-| Agent (Docker) | `revenant-agent/src/redis-sandbox.ts`, `redis-proof-poll.ts` | Throwaway `redis-server` in a container |
+| Cloud worker | `apps/api/src/scheduler/redis-proof-worker.ts`, `apps/api/src/lib/redis-sandbox.ts` | **Default executor.** Claims proofs and runs the restore sandbox inside the API process |
+| Agent (Docker) | `revenant-agent/src/redis-sandbox.ts`, `redis-proof-poll.ts` | Optional executor for Redis on a private network the cloud cannot route to |
 
-### Why the agent uses `redis-cli --rdb`
+### Two executors, one queue
+
+A restore proof needs a throwaway `redis-server`. The first design put that
+only in the self-hosted agent, which made an always-on customer-operated
+service a hidden prerequisite of a dashboard button — and every proof in a
+deployment without one sat in `pending` for 30 minutes before failing with
+*"No Redis proof worker claimed this run"*.
+
+The cloud now runs the sandbox itself:
+
+- the API already reaches the customer's Redis (the URL probe proves it),
+- `redis-server` runs as a throwaway **local process** on loopback — no Docker
+  daemon required, exactly like `revenant redis-prove` on a customer's laptop,
+- the image ships Redis 8 as `redis-server-8`, because a sandbox must be at
+  least as new as the customer's Redis (Redis never reads a newer data
+  format).
+
+Self-hosted agents keep working and still take over for Redis inside a
+private network. Both claim the same row with `FOR UPDATE … SKIP LOCKED`.
+
+### Why the sandbox uses `redis-cli --rdb`
 
 Rather than reading the RDB off disk, `redis-cli --rdb <file>` asks the **server** to
 stream a complete dump over the wire. That means:
@@ -128,6 +149,17 @@ stream a complete dump over the wire. That means:
 
 The sandbox then runs with `--save "" --appendonly no`, so it persists nothing and cannot
 write back into the customer's dump.
+
+**When the provider refuses.** Azure Cache for Redis answers
+`ERR command 'replconf' is not allowed` — it will not hand out its RDB at
+all. In that case the proof falls back to a **logical capture**: the keyspace
+is read with `SCAN`/`DUMP`/`PTTL` and rebuilt in the sandbox with `RESTORE`,
+and a content digest of the source is compared against a content digest of the
+restored instance. (The comparison is on content, not on the `DUMP` payload —
+that embeds an absolute expiry timestamp and would differ on every read.)
+
+The proof records which mechanism it used, so the ledger never implies a
+file-level proof that did not happen.
 
 ## What we never store
 

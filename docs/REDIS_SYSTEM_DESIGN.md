@@ -6,6 +6,95 @@
 
 ---
 
+## Who runs a Redis proof (and why there used to be only one answer)
+
+**This is the answer to "who decided an online Redis proof worker was
+required?" — nobody, deliberately. It was an accident of the first design.**
+
+The original Redis provider shipped with exactly ONE executor: a self-hosted
+`revenant-agent`. The reasoning was "a restore proof needs a throwaway
+redis-server, and the cloud API has no runtime to run one in". So the agent
+owned the sandbox (`revenant-agent/src/redis-sandbox.ts`) and the proof queue
+had exactly one consumer.
+
+The consequence was that a dashboard button had a hidden prerequisite: an
+always-on service the customer had to deploy and operate. In any deployment
+without one, every proof sat in `pending` until the sweeper failed it 30
+minutes later with *"No Redis proof worker claimed this run"* — a message that
+named a component the customer had never heard of.
+
+**The premise was wrong.** The API already reaches the customer's Redis
+directly (the URL probe proves it), so the same box can host the sandbox. The
+proof now runs **inside the API process**, as a throwaway `redis-server` on
+loopback — the same thing the `revenant redis-prove` CLI does on a customer's
+laptop, with no Docker daemon and no second deployment.
+
+### One queue, two consumers
+
+| Consumer | Where it runs | Claims when |
+|---|---|---|
+| **Cloud worker** (`apps/api/src/scheduler/redis-proof-worker.ts`) | inside the API | the Redis is reachable from the cloud |
+| **Agent** (`revenant-agent`) | customer's network | always — it may reach what the cloud cannot |
+
+Both claim the same row with `FOR UPDATE … SKIP LOCKED`, so N executors across
+N API instances and N agents share one queue without coordination.
+
+When the cloud worker cannot reach a Redis it does **not** fail the proof —
+that would be a lie, because the backup was never tested. It releases the run
+(`status='pending'`, `last_error_kind='unreachable'`) and leaves it for an
+agent inside the customer's network. The dashboard then says *why* it is
+waiting instead of spinning.
+
+### The proof state machine
+
+```
+        ┌───────────── claim ─────────────┐
+        │                                   ▼
+   ┌─────────┐   release (unreachable)   ┌─────────┐
+   │ pending │ ─────────────────────────►│ running │
+   └─────────┘◄───────────────────────── └─────────┘
+        │                                   │
+        │ queue timeout                    ├─ pass   → verified
+        │ (30 min)                         ├─ fail   → the backup is bad
+        ▼                                   └─ error  → the check could not run
+     ┌────────┐
+     │ error  │
+     └────────┘
+```
+
+Three terminal states, because they mean three different things to a customer:
+
+- **pass** — the backup restored.
+- **fail** — the backup was tested and did not come back.
+- **error** — the check could not be run (no sandbox, version skew, refused
+  credentials). Reporting a failed CHECK as a failed BACKUP sends the
+  customer hunting for a problem they do not have.
+
+### Capture strategies
+
+| Strategy | When | What it proves |
+|---|---|---|
+| `rdb` | the server will stream its RDB (`SYNC`/`REPLCONF` allowed) | the actual backup FILE restores |
+| `logical` | the provider refuses to hand out its RDB | the DATA comes back intact |
+
+Azure Cache for Redis answers `ERR command 'replconf' is not allowed`, so the
+RDB path cannot run there. The logical path uses only commands every Redis
+allows — `SCAN`, `DUMP`, `PTTL`, `RESTORE` — and compares a **content digest**
+of the source against a content digest of the restored instance. (Not the
+`DUMP` payload: that embeds an absolute expiry timestamp, so it differs on
+every read and would fail for every key with a TTL.)
+
+### Version matching
+
+A Redis server can read an OLDER data format but never a newer one. A Redis 7
+sandbox handed a Redis 8 payload fails with *"DUMP payload version or
+checksum are wrong"* — which reads exactly like a corrupt backup and is not
+one. So the sandbox binary is chosen at run time: the first candidate that
+exists AND is at least as new as the customer's Redis. The image ships Redis 8
+as `redis-server-8` (see the `Dockerfile`).
+
+---
+
 ## The blunder, honestly
 
 The first cut of `claimNextRedisProof` looked reasonable and was not:
@@ -99,7 +188,7 @@ open tab, on top of the agent already polling server-side.
 | `POST /api/v1/redis/:id/proofs` | 3 | plan lookup, quota count, insert proof (+snapshot if storing) |
 | `DELETE /api/v1/redis/:id` | 2 + N | list storage keys, purge bytes, then delete (cascades) |
 
-### Per agent poll
+### Per executor poll
 
 | State | Queries | Cadence |
 |---|---|---|
@@ -112,6 +201,12 @@ open tab, on top of the agent already polling server-side.
 |---|---|---|
 | Redis TTL sweep | 1 indexed select + N deletes | 5 min, batch 200 |
 | Redis reclaim | 1 indexed update | 5 min |
+| Redis proof worker | 2 index-only + 1 in-flight count | 5s → 60s backoff |
+
+The in-flight count is a `COUNT` over `redis_proofs_running_idx` — a partial
+index bounded by running work, not by history. It caps how many proofs the
+fleet runs at once, because every running proof holds a throwaway
+redis-server with its own memory ceiling.
 
 ---
 

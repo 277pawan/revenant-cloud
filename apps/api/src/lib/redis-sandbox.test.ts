@@ -8,6 +8,8 @@ import test from "node:test";
 
 import {
   classifyRedisFailure,
+  compareRedisVersions,
+  parseRedisVersion,
   redactRedisUrl,
   runRedisRestoreProof,
 } from "./redis-sandbox.js";
@@ -241,10 +243,36 @@ test(
         timeoutMs: 20_000,
       });
 
-      assert.equal(result.outcome, "failed");
+      // "error", not "failed": the check could not run. Reporting a failed
+      // CHECK as a failed BACKUP sends the customer hunting for a problem
+      // they do not have.
+      assert.equal(result.outcome, "error");
+      assert.equal(result.restored, false);
       assert.match(result.messages[0] ?? "", /credential|authentication/i);
     } finally {
       source.stop();
     }
   }
 );
+
+test("compares Redis versions the way the data format does", () => {
+  // A sandbox must be at least as new as the source. Redis never reads a
+  // newer data format.
+  assert.ok(compareRedisVersions("8.0.0", "7.9.9") > 0);
+  assert.ok(compareRedisVersions("7.2.1", "7.2.0") > 0);
+  assert.equal(compareRedisVersions("7.0.15", "7.0.15"), 0);
+  assert.ok(compareRedisVersions("7.0.15", "8.0.0") < 0);
+});
+
+test("reads the version out of a redis-server banner", () => {
+  assert.equal(
+    parseRedisVersion(
+      "Redis server v=7.0.15 sha=00000000:0 malloc=jemalloc-5.3.0 bits=64"
+    ),
+    "7.0.15"
+  );
+  assert.equal(
+    parseRedisVersion("Redis server v=8.10.3 sha=00000000:1 malloc=jemalloc-5.3.0"),
+    "8.10.3"
+  );
+});

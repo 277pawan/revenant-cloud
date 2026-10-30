@@ -147,9 +147,19 @@ const envSchema = z.object({
   REDIS_PROOF_MAX_MEMORY: z.string().default("512mb"),
   /** Budget for RDB pull + sandbox boot + inspection. */
   REDIS_PROOF_TIMEOUT_MS: z.coerce.number().int().min(10_000).default(120_000),
-  /** redis-server / redis-cli binaries used to run the proof sandbox. */
-  REDIS_PROOF_SERVER_BIN: z.string().default("redis-server"),
-  REDIS_PROOF_CLI_BIN: z.string().default("redis-cli"),
+  /**
+   * redis-server / redis-cli binaries used to run the proof sandbox.
+   *
+   * A comma-separated candidate list. The first one that exists AND is new
+   * enough for the customer's Redis wins, because a restore sandbox must be
+   * at least as new as the server it replays data from — Redis never reads a
+   * newer data format.
+   *
+   * The image ships Redis 8 as `redis-server-8` (see the Dockerfile), with
+   * the distribution's build kept as a fallback.
+   */
+  REDIS_PROOF_SERVER_BIN: z.string().default("redis-server-8,redis-server"),
+  REDIS_PROOF_CLI_BIN: z.string().default("redis-cli-8,redis-cli"),
   /**
    * When true, API process polls due schedules and enqueues jobs.
    * Default: on in development, off in production.
