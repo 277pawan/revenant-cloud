@@ -50,11 +50,11 @@ import {
   buildRedisArtifactKey,
   encodeArtifact,
   decodeArtifact,
-  artifactExtension,
   resolveRedisArtifactCompression,
   type ArtifactStore,
   type RedisArtifactCompression,
 } from "../lib/artifact-store.js";
+import { inspectRedisRdbPreview } from "../lib/redis-sandbox.js";
 
 // ─── Proof quota ────────────────────────────────────────────────────────────
 
@@ -183,27 +183,31 @@ export async function startRedisProof(
       : Math.max(1, input.retentionHours);
   const expiresAt = new Date(now.getTime() + retentionHours * 60 * 60 * 1000);
 
-  // Reserve the storage key NOW rather than at upload time, so a crashed agent
-  // leaves a row the sweeper can find instead of an untraceable file.
-  const storageKey = buildRedisArtifactKey({
-    organizationId: input.organizationId,
-    redisResourceId: input.redisResourceId,
-    snapshotId: "pending",
-    capturedAt: now,
-  }).replace("/pending.", `/${proof!.id}.`);
-
   const [snapshot] = await db
     .insert(redisSnapshots)
     .values({
       organizationId: input.organizationId,
       redisResourceId: input.redisResourceId,
       status: "capturing",
-      storageKey,
+      storageKey: null,
       expiresAt,
       createdAt: now,
       updatedAt: now,
     })
     .returning();
+
+  const storageKey = buildRedisArtifactKey({
+    organizationId: input.organizationId,
+    redisResourceId: input.redisResourceId,
+    snapshotId: snapshot!.id,
+    capturedAt: now,
+    compression: getRedisArtifactCompression(),
+  });
+
+  await db
+    .update(redisSnapshots)
+    .set({ storageKey, updatedAt: now })
+    .where(eq(redisSnapshots.id, snapshot!.id));
 
   await db
     .update(redisProofs)
@@ -213,12 +217,7 @@ export async function startRedisProof(
   return {
     proofId: proof!.id,
     snapshotId: snapshot!.id,
-    storageKey: buildRedisArtifactKey({
-      organizationId: input.organizationId,
-      redisResourceId: input.redisResourceId,
-      snapshotId: snapshot!.id,
-      capturedAt: now,
-    }),
+    storageKey,
     expiresAt: expiresAt.toISOString(),
   };
 }
@@ -536,63 +535,64 @@ export async function deleteRedisSnapshot(
  * Only a snapshot that is actually stored can be read — a failed capture has
  * no bytes, and an expired one has already been deleted.
  */
+export function redisSnapshotDownloadName(snapshotId: string): string {
+  return `revenant-redis-${snapshotId}.rdb`;
+}
+
+export function redisLocalRestoreCommand(fileName: string): string {
+  return [
+    `# Run these commands in the folder where the downloaded file is saved`,
+    `mkdir -p /tmp/revenant-restore`,
+    `cp "./${fileName}" /tmp/revenant-restore/dump.rdb`,
+    `redis-server --port 6380 --dir /tmp/revenant-restore --dbfilename dump.rdb --save "" --appendonly no`,
+  ].join("\n");
+}
+
 export async function readRedisSnapshotArtifact(
   db: Database,
   organizationId: string,
   snapshotId: string,
   store?: ArtifactStore
-): Promise<{ bytes: Buffer; checksumSha256: string | null; fileName: string }> {
-  const [row] = await db
-    .select({
-      status: redisSnapshots.status,
-      storageKey: redisSnapshots.storageKey,
-      checksumSha256: redisSnapshots.checksumSha256,
-      compression: redisSnapshots.compression,
-      deletedAt: redisSnapshots.deletedAt,
-    })
-    .from(redisSnapshots)
-    .where(
-      and(
-        eq(redisSnapshots.id, snapshotId),
-        eq(redisSnapshots.organizationId, organizationId)
-      )
-    )
-    .limit(1);
-  if (!row) throw createAppError(404, "Snapshot not found", "NOT_FOUND");
-
-  if (row.status !== "stored" || !row.storageKey) {
+): Promise<{
+  bytes: Buffer;
+  checksumSha256: string | null;
+  fileName: string;
+  restoreCommand: string;
+}> {
+  const artifact = await readRedisArtifact(db, organizationId, snapshotId, store);
+  const magic = artifact.buffer.subarray(0, 5).toString("ascii");
+  if (magic !== "REDIS") {
     throw createAppError(
-      409,
-      row.status === "failed"
-        ? "This snapshot failed to store, so there are no bytes to download. The failure reason is shown on the snapshot."
-        : `This snapshot is ${row.status} and has no stored artifact.`,
-      "SNAPSHOT_NOT_STORED"
+      500,
+      "Decoded snapshot is not a Redis RDB. Re-run a restore proof to capture a new snapshot.",
+      "ARTIFACT_CORRUPT"
     );
   }
-
-  const artifactStore = store ?? getArtifactStore(process.env as Record<string, string>);
-  let raw: Buffer;
-  try {
-    raw = await artifactStore.get(row.storageKey);
-  } catch {
-    throw createAppError(
-      409,
-      "The stored artifact could not be read. It may have been deleted by the retention sweeper.",
-      "SNAPSHOT_ARTIFACT_UNAVAILABLE"
-    );
-  }
-
-  // Artifacts are stored compressed. The customer gets the real RDB, with
-  // the extension that says so — handing them a gzip stream named ".rdb"
-  // would produce a file redis-server cannot load.
-  const compression = (row.compression ?? "none") as RedisArtifactCompression;
-  const bytes = decodeArtifact(raw, compression);
-
+  const fileName = redisSnapshotDownloadName(snapshotId);
   return {
-    bytes,
-    checksumSha256: row.checksumSha256,
-    fileName: `revenant-redis-${snapshotId}${artifactExtension(compression)}`,
+    bytes: artifact.buffer,
+    checksumSha256: artifact.checksumSha256,
+    fileName,
+    restoreCommand: redisLocalRestoreCommand(fileName),
   };
+}
+
+/** Load the stored RDB in an isolated Redis and return a small data sample. */
+export async function previewRedisSnapshotArtifact(
+  db: Database,
+  organizationId: string,
+  snapshotId: string
+) {
+  const artifact = await readRedisSnapshotArtifact(db, organizationId, snapshotId);
+  try {
+    return await inspectRedisRdbPreview(artifact.bytes);
+  } catch (err) {
+    throw createAppError(
+      500,
+      `Could not inspect the restored snapshot: ${err instanceof Error ? err.message : String(err)}`,
+      "SNAPSHOT_PREVIEW_FAILED"
+    );
+  }
 }
 
 // ─── Agent claim / complete ────────────────────────────────────────────────
@@ -1150,6 +1150,7 @@ export async function readRedisArtifact(
 ): Promise<{ buffer: Buffer; checksumSha256: string }> {
   const [row] = await db
     .select({
+      status: redisSnapshots.status,
       storageKey: redisSnapshots.storageKey,
       checksumSha256: redisSnapshots.checksumSha256,
       expiresAt: redisSnapshots.expiresAt,
@@ -1165,8 +1166,18 @@ export async function readRedisArtifact(
     )
     .limit(1);
 
-  if (!row || !row.storageKey || row.deletedAt) {
+  if (!row) throw createAppError(404, "Snapshot not found", "NOT_FOUND");
+  if (row.deletedAt || row.status === "expired" || row.status === "deleted") {
     throw createAppError(404, "Snapshot not found or already expired", "NOT_FOUND");
+  }
+  if (row.status !== "stored" || !row.storageKey) {
+    throw createAppError(
+      409,
+      row.status === "failed"
+        ? "This snapshot failed to store, so there are no bytes to download."
+        : `This snapshot is ${row.status} and has no stored artifact yet.`,
+      "SNAPSHOT_NOT_STORED"
+    );
   }
   if (row.expiresAt.getTime() <= Date.now()) {
     throw createAppError(

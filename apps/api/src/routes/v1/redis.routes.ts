@@ -92,4 +92,10 @@ export async function redisRoutes(app: FastifyInstance, handlers: RedisHandlers)
     { preHandler: requirePermission("databases:read") },
     handlers.downloadSnapshotArtifact
   );
+
+  app.get(
+    "/redis/snapshots/:id/preview",
+    { preHandler: requirePermission("databases:read") },
+    handlers.previewSnapshotArtifact
+  );
 }

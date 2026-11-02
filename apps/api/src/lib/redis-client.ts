@@ -316,12 +316,24 @@ export function parseKeyspace(raw: string): RedisFingerprint["keyspace"] {
   for (const line of raw.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) continue;
-    const m = /^db(\d+):keys=(\d+),expires=(\d+)(?:,avg_ttl=(\d+))?$/.exec(trimmed);
-    if (!m) continue;
-    out[`db${m[1]}`] = {
-      keys: Number(m[2]),
-      expires: Number(m[3]),
-      avgTtl: m[4] ? Number(m[4]) : null,
+    const match = /^db(\d+):(.+)$/.exec(trimmed);
+    if (!match) continue;
+    const fields = Object.fromEntries(
+      match[2].split(",").map((field) => {
+        const separator = field.indexOf("=");
+        return separator === -1
+          ? [field, ""]
+          : [field.slice(0, separator), field.slice(separator + 1)];
+      })
+    );
+    const keys = Number(fields.keys);
+    const expires = Number(fields.expires);
+    if (!Number.isFinite(keys) || !Number.isFinite(expires)) continue;
+    const avgTtl = fields.avg_ttl === undefined ? null : Number(fields.avg_ttl);
+    out[`db${match[1]}`] = {
+      keys,
+      expires,
+      avgTtl: avgTtl !== null && Number.isFinite(avgTtl) ? avgTtl : null,
     };
   }
   return out;

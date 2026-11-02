@@ -26,7 +26,9 @@ import {
   startRedisProof,
   deleteRedisSnapshot,
   readRedisSnapshotArtifact,
+  previewRedisSnapshotArtifact,
 } from "../services/redis-snapshots.service.js";
+import { listSearchQuerySchema } from "../validations/pagination.schema.js";
 import {
   createRedisResourceSchema,
   redisHistoryPageQuerySchema,
@@ -79,9 +81,16 @@ export function createRedisHandlers(deps: RedisHandlersDeps) {
     },
 
     list: async (request: FastifyRequest, reply: FastifyReply) => {
+      const query = listSearchQuerySchema.safeParse(request.query);
+      if (!query.success) {
+        return reply.status(400).send({
+          error: "Invalid Redis list query",
+          code: "VALIDATION_ERROR",
+          details: query.error.flatten(),
+        });
+      }
       try {
-        const resources = await listRedisResources(db, request.user.organizationId);
-        return { resources };
+        return await listRedisResources(db, request.user.organizationId, query.data);
       } catch (err) {
         return sendHandlerError(err, request, reply, "Failed to list Redis resources");
       }
@@ -385,6 +394,7 @@ export function createRedisHandlers(deps: RedisHandlersDeps) {
           )
           .header("Content-Type", "application/octet-stream")
           .header("X-Revenant-Checksum-Sha256", artifact.checksumSha256 ?? "")
+          .header("X-Revenant-Restore-Command", artifact.restoreCommand.replaceAll("\n", " && "))
           .send(artifact.bytes);
       } catch (err) {
         return sendHandlerError(
@@ -392,6 +402,30 @@ export function createRedisHandlers(deps: RedisHandlersDeps) {
           request,
           reply,
           "Failed to download Redis snapshot artifact"
+        );
+      }
+    },
+
+    previewSnapshotArtifact: async (request: FastifyRequest, reply: FastifyReply) => {
+      const params = redisSnapshotIdParamSchema.safeParse(request.params);
+      if (!params.success) {
+        return reply
+          .status(400)
+          .send({ error: "Invalid snapshot id", code: "VALIDATION_ERROR" });
+      }
+      try {
+        const preview = await previewRedisSnapshotArtifact(
+          db,
+          request.user.organizationId,
+          params.data.id
+        );
+        return { preview };
+      } catch (err) {
+        return sendHandlerError(
+          err,
+          request,
+          reply,
+          "Failed to inspect Redis snapshot"
         );
       }
     },

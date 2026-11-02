@@ -48,7 +48,7 @@
  */
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFile, mkdtemp, rm, stat } from "node:fs/promises";
+import { copyFile, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -57,6 +57,7 @@ import { parseRedisUrl, type RedisCheckResult } from "@revenant/shared";
 
 import {
   RedisProbe,
+  type RespValue,
   bufToText,
   configToMap,
   parseInfo,
@@ -154,6 +155,231 @@ export interface RedisSandboxResult {
   messages: string[];
   /** Present only when captureRdb is true. */
   rdb?: Buffer;
+}
+
+export interface RedisRdbPreviewKey {
+  key: string;
+  type: string;
+  ttlSeconds: number | null;
+  preview: string;
+  previewEncoding: "text" | "base64";
+  truncated: boolean;
+}
+
+export interface RedisRdbPreviewDatabase {
+  database: number;
+  keyCount: number;
+  expires: number;
+  keys: RedisRdbPreviewKey[];
+}
+
+/**
+ * Load a verified RDB into a disposable local Redis and return a small,
+ * user-requested sample. Values are intentionally capped per key and overall.
+ */
+export async function inspectRedisRdbPreview(
+  rdb: Buffer,
+  options: { sampleLimit?: number; serverBin?: string; timeoutMs?: number } = {}
+): Promise<{
+  databases: RedisRdbPreviewDatabase[];
+  totalKeys: number;
+  sampledKeys: number;
+  sampleLimit: number;
+  truncated: boolean;
+}> {
+  if (rdb.subarray(0, 5).toString("ascii") !== "REDIS") {
+    throw new Error("Snapshot bytes do not have a valid Redis RDB signature.");
+  }
+
+  const sampleLimit = Math.max(1, Math.min(options.sampleLimit ?? 10, 20));
+  const timeoutMs = options.timeoutMs ?? 60_000;
+  const serverCandidates = candidateList(
+    options.serverBin ??
+      process.env.REDIS_PROOF_SERVER_BIN ??
+      "redis-server-8,redis-server"
+  );
+  const serverBin = await resolvePreviewServerBin(serverCandidates);
+  const workDir = await mkdtemp(join(tmpdir(), "revenant-redis-preview-"));
+  let sandbox: SandboxHandle | null = null;
+  try {
+    await writeFile(join(workDir, "preview.rdb"), rdb, { mode: 0o600 });
+    const started = await startSandbox(
+      serverBin,
+      workDir,
+      "preview.rdb",
+      process.env.REDIS_PROOF_MAX_MEMORY ?? "512mb",
+      timeoutMs
+    );
+    if (!started.ok) {
+      throw new Error(`Could not load snapshot into the preview Redis: ${started.message}`);
+    }
+    sandbox = started.handle;
+
+    return await withRedis(
+      { host: "127.0.0.1", port: sandbox.port, timeoutMs: 5_000 },
+      async (client) => {
+        const keyspace = parseKeyspace(
+          bufToText(await client.send("INFO", "keyspace"))
+        );
+        const databases: RedisRdbPreviewDatabase[] = [];
+        let remaining = sampleLimit;
+
+        for (const [databaseName, stats] of Object.entries(keyspace)) {
+          if (remaining <= 0) break;
+          const database = Number(databaseName.slice(2));
+          await client.send("SELECT", String(database));
+          const keys: RedisRdbPreviewKey[] = [];
+          let cursor = "0";
+          do {
+            const scan = await client.send("SCAN", cursor, "COUNT", String(Math.min(remaining, 10)));
+            if (!Array.isArray(scan) || !Array.isArray(scan[1])) {
+              throw new Error("Redis returned an invalid key scan response.");
+            }
+            cursor = bufToText(scan[0]) || "0";
+            for (const rawKey of scan[1]) {
+              if (remaining <= 0) break;
+              const key = Buffer.isBuffer(rawKey) ? rawKey : Buffer.from(bufToText(rawKey));
+              const [typeReply, ttlReply] = await Promise.all([
+                client.send("TYPE", key),
+                client.send("PTTL", key),
+              ]);
+              const type = bufToText(typeReply);
+              const ttlMs = typeof ttlReply === "number" ? ttlReply : -1;
+              const value = await previewRedisValue(client, key);
+              keys.push({
+                key: previewText(key).value,
+                type,
+                ttlSeconds: ttlMs >= 0 ? Math.ceil(ttlMs / 1000) : null,
+                ...value,
+              });
+              remaining -= 1;
+            }
+          } while (cursor !== "0" && remaining > 0);
+
+          databases.push({
+            database,
+            keyCount: stats.keys,
+            expires: stats.expires,
+            keys,
+          });
+        }
+
+        const totalKeys = Object.values(keyspace).reduce((sum, item) => sum + item.keys, 0);
+        const sampledKeys = databases.reduce((sum, item) => sum + item.keys.length, 0);
+        return {
+          databases,
+          totalKeys,
+          sampledKeys,
+          sampleLimit,
+          truncated: totalKeys > sampledKeys,
+        };
+      }
+    );
+  } finally {
+    sandbox?.stop();
+    await rm(workDir, { recursive: true, force: true });
+  }
+}
+
+async function previewRedisValue(
+  client: RedisProbe,
+  key: Buffer
+): Promise<Pick<RedisRdbPreviewKey, "preview" | "previewEncoding" | "truncated">> {
+  const response = await client.send("EVAL", REDIS_PREVIEW_SCRIPT, "1", key);
+  if (!Array.isArray(response) || response.length < 2) {
+    throw new Error("Redis returned an invalid value preview.");
+  }
+  const type = respText(response[0]);
+  const memberCount = Number(response[1]);
+  const sampledValues = response.slice(2).map((value) => previewRespValue(value));
+  const preview = `${memberCount} ${
+    type === "string" ? "bytes" : "members"
+  }${sampledValues.length ? ` · ${JSON.stringify(sampledValues)}` : ""}`;
+  const cappedPreview = preview.slice(0, 1_000);
+  const truncated = cappedPreview.length < preview.length ||
+    response.slice(2).some((value) => isPreviewValueTruncated(value));
+  const isBinary = response.slice(2).some((value) => containsBinaryPreviewValue(value));
+
+  return {
+    preview: cappedPreview,
+    previewEncoding: isBinary ? "base64" : "text",
+    truncated,
+  };
+}
+
+const REDIS_PREVIEW_SCRIPT = `
+local kind = redis.call('TYPE', KEYS[1]).ok
+local out = {kind}
+local limit = 80
+local count = 0
+if kind == 'string' then
+  local valueLength = redis.call('STRLEN', KEYS[1])
+  count = valueLength
+  table.insert(out, count)
+  table.insert(out, redis.call('GETRANGE', KEYS[1], 0, limit - 1))
+elseif kind == 'list' then
+  count = redis.call('LLEN', KEYS[1])
+  table.insert(out, count)
+  local values = redis.call('LRANGE', KEYS[1], 0, 2)
+  for _, value in ipairs(values) do table.insert(out, string.sub(value, 1, limit)) end
+elseif kind == 'hash' then
+  count = redis.call('HLEN', KEYS[1])
+  table.insert(out, count)
+  local values = redis.call('HSCAN', KEYS[1], 0, 'COUNT', 3)[2]
+  for _, value in ipairs(values) do table.insert(out, string.sub(value, 1, limit)) end
+elseif kind == 'set' then
+  count = redis.call('SCARD', KEYS[1])
+  table.insert(out, count)
+  local values = redis.call('SSCAN', KEYS[1], 0, 'COUNT', 3)[2]
+  for _, value in ipairs(values) do table.insert(out, string.sub(value, 1, limit)) end
+elseif kind == 'zset' then
+  count = redis.call('ZCARD', KEYS[1])
+  table.insert(out, count)
+  local values = redis.call('ZSCAN', KEYS[1], 0, 'COUNT', 3)[2]
+  for index, value in ipairs(values) do
+    table.insert(out, string.sub(value, 1, limit))
+    if index % 2 == 0 then table.insert(out, value) end
+  end
+end
+return out
+`;
+
+function respText(value: RespValue): string {
+  if (Buffer.isBuffer(value)) return value.toString("utf8");
+  return typeof value === "number" ? String(value) : "";
+}
+
+type PreviewValue = string | number | PreviewValue[];
+
+function previewRespValue(value: RespValue): PreviewValue {
+  if (Buffer.isBuffer(value)) {
+    const text = previewText(value);
+    return text.binary ? `base64:${value.toString("base64")}` : text.value;
+  }
+  if (Array.isArray(value)) return value.map(previewRespValue);
+  if (typeof value === "number") return value;
+  return "";
+}
+
+function isPreviewValueTruncated(value: RespValue): boolean {
+  if (Buffer.isBuffer(value)) return value.byteLength === 80;
+  return Array.isArray(value) && value.some(isPreviewValueTruncated);
+}
+
+function containsBinaryPreviewValue(value: RespValue): boolean {
+  if (Buffer.isBuffer(value)) return previewText(value).binary;
+  return Array.isArray(value) && value.some(containsBinaryPreviewValue);
+}
+
+function previewText(value: Buffer): { value: string; binary: boolean } {
+  const decoded = value.toString("utf8");
+  const binary = !Buffer.from(decoded, "utf8").equals(value) || value.some(
+    (byte) => byte === 0 || byte < 9 || (byte > 13 && byte < 32)
+  );
+  return {
+    value: binary ? value.toString("base64") : decoded,
+    binary,
+  };
 }
 
 // ─── Lua (runs against the SANDBOX only, never the customer's cache) ─────────
@@ -958,6 +1184,19 @@ function candidateList(value: string): string[] {
     .split(",")
     .map((entry) => entry.trim())
     .filter(Boolean);
+}
+
+async function resolvePreviewServerBin(candidates: string[]): Promise<string> {
+  const available: Array<{ bin: string; version: string }> = [];
+  for (const bin of candidates) {
+    const result = await run(bin, ["--version"], { timeoutMs: 15_000 }).catch(() => null);
+    if (!result || result.code !== 0) continue;
+    const version = parseRedisVersion(result.stdout);
+    if (version) available.push({ bin, version });
+  }
+
+  available.sort((a, b) => compareRedisVersions(b.version, a.version));
+  return available[0]?.bin ?? candidates[0] ?? "redis-server";
 }
 
 /**

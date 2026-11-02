@@ -42,6 +42,10 @@ Manual snapshots can be deleted from AWS through the recovery-point action. AWS 
 
 Legacy verification records without an AWS snapshot ID are matched against snapshots that existed by the verification time. The resolved ID is saved and shown for review before a restore is started; if Revenant cannot make a safe match, it does not guess a snapshot.
 
+## Redis restore proofs
+
+Redis resources, restore proofs, downloadable snapshots, restore steps, deployment requirements, and history pagination are documented in the single [Redis guide](./docs/REDIS.md).
+
 ## Database commands (from repo root)
 
 | Command               | What it does                                           |

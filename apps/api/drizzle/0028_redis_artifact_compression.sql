@@ -20,7 +20,7 @@
 -- That was wrong, and wrong in the direction that threw away the feature. LZF
 -- is tuned for BGSAVE speed, not ratio, and real cache payloads are JSON-shaped
 -- with repeated key structure — near the best case for DEFLATE. Hence gzip as
--- the default now. See docs/REDIS_SYSTEM_DESIGN.md.
+-- the default now. See docs/REDIS.md.
 --
 -- Anything stored before this migration has NULL here, which reads as 'none' —
 -- the truth for every artifact written so far.

@@ -14,7 +14,7 @@
  *      stored as an artifact with a MANDATORY TTL that we enforce server-side.
  *
  * Bytes never live in the control-plane Postgres. Only metadata does.
- * See docs/REDIS_PROVIDER.md for the full reasoning.
+ * See docs/REDIS.md for the Redis behavior and operator guide.
  */
 
 /** Lifecycle of a Redis snapshot artifact (opt-in storage only). */

@@ -8,7 +8,7 @@
  * mirroring database_credentials. The plaintext URL is never returned by any
  * endpoint, never logged, and never written to a snapshot row.
  */
-import { and, count, eq, sql } from "drizzle-orm";
+import { and, count, desc, eq, ilike, or, sql } from "drizzle-orm";
 
 import {
   getPlanDefinition,
@@ -26,6 +26,11 @@ import { createAppError } from "../lib/errors.js";
 import { encryptSecret, decryptSecret } from "../lib/crypto.js";
 import { getArtifactStore } from "../lib/artifact-store.js";
 import { fingerprintRedis, withRedis } from "../lib/redis-client.js";
+import {
+  paginationMeta,
+  paginationOffset,
+  type ListSearchQueryInput,
+} from "../validations/pagination.schema.js";
 
 export interface CreateRedisResourceInput {
   organizationId: string;
@@ -251,14 +256,37 @@ export async function createRedisResource(
 
 export async function listRedisResources(
   db: Database,
-  organizationId: string
-): Promise<RedisResource[]> {
-  const rows = await db
-    .select()
-    .from(redisResources)
-    .where(eq(redisResources.organizationId, organizationId))
-    .orderBy(sql`${redisResources.createdAt} desc`);
-  return rows.map(toRedisResource);
+  organizationId: string,
+  query: ListSearchQueryInput
+) {
+  const { page, pageSize, search } = query;
+  const offset = paginationOffset(page, pageSize);
+  const term = search?.trim();
+  const searchFilter = term
+    ? or(
+        ilike(redisResources.name, `%${term}%`),
+        ilike(redisResources.host, `%${term}%`),
+        ilike(redisResources.engineVersion, `%${term}%`)
+      )
+    : undefined;
+  const where = and(eq(redisResources.organizationId, organizationId), searchFilter);
+
+  const [rows, [totalRow]] = await Promise.all([
+    db
+      .select()
+      .from(redisResources)
+      .where(where)
+      .orderBy(desc(redisResources.createdAt), desc(redisResources.id))
+      .limit(pageSize)
+      .offset(offset),
+    db.select({ value: count() }).from(redisResources).where(where),
+  ]);
+
+  const total = Number(totalRow?.value ?? 0);
+  return {
+    data: rows.map(toRedisResource),
+    pagination: paginationMeta(total, page, pageSize),
+  };
 }
 
 export async function getRedisResource(
