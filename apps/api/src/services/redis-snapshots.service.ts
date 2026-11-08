@@ -19,6 +19,7 @@
  * proof and keeping bytes are different decisions and stay in different tables.
  */
 import {
+  asc,
   and,
   count,
   desc,
@@ -105,6 +106,8 @@ export async function assertProofQuota(
 }
 
 // ─── Snapshots ──────────────────────────────────────────────────────────────
+
+const REDIS_SNAPSHOT_HISTORY_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 export interface StartSnapshotInput {
   organizationId: string;
@@ -387,8 +390,48 @@ export async function listRedisSnapshots(
   redisResourceId: string,
   offset = 0,
   pageSize = 100,
-  search = ""
+  search = "",
+  store?: ArtifactStore
 ) {
+  const historyCutoff = new Date(Date.now() - REDIS_SNAPSHOT_HISTORY_RETENTION_MS);
+  const batchSize = 200;
+  let artifactStore = store;
+
+  while (true) {
+    const oldSnapshots = await db
+      .select({
+        id: redisSnapshots.id,
+        storageKey: redisSnapshots.storageKey,
+      })
+      .from(redisSnapshots)
+      .where(
+        and(
+          eq(redisSnapshots.organizationId, organizationId),
+          eq(redisSnapshots.redisResourceId, redisResourceId),
+          lt(redisSnapshots.createdAt, historyCutoff)
+        )
+      )
+      .orderBy(asc(redisSnapshots.createdAt))
+      .limit(batchSize);
+
+    if (oldSnapshots.length === 0) break;
+    for (const snapshot of oldSnapshots) {
+      if (snapshot.storageKey) {
+        artifactStore ??= getArtifactStore(process.env as Record<string, string>);
+        await artifactStore.delete(snapshot.storageKey);
+      }
+      await db
+        .delete(redisSnapshots)
+        .where(
+          and(
+            eq(redisSnapshots.id, snapshot.id),
+            eq(redisSnapshots.organizationId, organizationId),
+            eq(redisSnapshots.redisResourceId, redisResourceId)
+          )
+        );
+    }
+  }
+
   const searchFilter = search.trim()
     ? or(
         ilike(redisSnapshots.status, `%${search.trim()}%`),

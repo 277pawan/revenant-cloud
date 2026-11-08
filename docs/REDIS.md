@@ -43,7 +43,7 @@ The dashboard intentionally does not overwrite a production Redis. A restore cha
 
 ## History, search and pagination
 
-The Redis resource list, proof history and snapshot history are server-paginated and searchable. Resource pages show 20 entries; history pages show 10. **Previous/Next** navigate the full result set, and changing a search returns to page 1. The dashboard only polls while a proof is pending/running and the tab is visible.
+The Redis resource list, proof history and snapshot history are server-paginated and searchable. Resource pages show 20 entries; history pages show 10. **Previous/Next** navigate the full result set, and changing a search returns to page 1. When snapshot history is requested, snapshots more than 30 days old are purged (including stored artifact bytes) before the remaining history is returned. The dashboard only polls while a proof is pending/running and the tab is visible.
 
 Proof detail includes outcome, executor, attempts, checks, key counts, restore time (RTO), observed recovery point (RPO) and error details. Snapshot history includes state, capture time, size, expiry and checksum, with download and delete actions where available.
 
